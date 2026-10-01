@@ -3,6 +3,12 @@
 // An infinite vertical stack of transformer blocks drawn as technical line diagrams. The camera
 // falls through it one block per beat; the quote sits one word (group) per block. On "disobey"
 // the fall stops dead, one block rotates out of alignment and the word highlights right-to-left.
+// It opens on FIG. 14's last frame: the spark at the frame centre drops into the shaft as its forward pass.
+// Take 2 (params.take = 2, lines read with nth = 1) is the same stack re-sampled: the camera climbs it
+// instead (one block per beat, with the data, all the way UP), every setup mirrored, the misaligned
+// block swings the other way, and DISOBEY lights its letters in a shuffled order (sample 2 of 2).
+// Last frame (both takes): a near-flat telephoto elevation of the column, the one misaligned block
+// in the middle with its Δθ callout, everything still.
 import * as THREE from 'three';
 import { Scene, type Frame } from '../engine/scene';
 import { FSPass, Layer2D, W, H } from '../engine/gl';
@@ -41,11 +47,11 @@ export default class Stack extends Scene {
   text3 = new THREE.Scene();
   hud = new Layer2D();
   bg = new FSPass(/* glsl */ `
-    uniform float t; uniform float fall; uniform float stopK; uniform float kick;
+    uniform float t; uniform float fall; uniform float stopK; uniform float kick; uniform float up;
     void main() {
       vec2 p = (vUv - 0.5) * vec2(16.0 / 9.0, 1.0);
-      // abyss: slightly lighter haze far below (the stack never ends)
-      float haze = smoothstep(0.9, -0.6, vUv.y) * 0.5;
+      // abyss: slightly lighter haze far below (the stack never ends); far above when climbing
+      float haze = smoothstep(0.9, -0.6, mix(vUv.y, 1.0 - vUv.y, up)) * 0.5;
       vec3 c = C_INK + C_INK2 * haze * 0.9;
       // faint drafting grid behind, parallax with the fall
       vec2 g = vec2(p.x * 24.0, p.y * 24.0 + fall * 2.2);
@@ -56,7 +62,7 @@ export default class Stack extends Scene {
       float streak = smoothstep(0.985, 1.0, n) * fract(p.y * 1.5 + fall * (0.6 + n) + n * 7.0);
       c += C_GRAPHITE * streak * 0.18 * (1.0 - stopK);
       fragColor = vec4(c, 1.0);
-    }`, { t: { value: 0 }, fall: { value: 0 }, stopK: { value: 0 }, kick: { value: 0 } });
+    }`, { t: { value: 0 }, fall: { value: 0 }, stopK: { value: 0 }, kick: { value: 0 }, up: { value: 0 } });
 
   private tmpl: Seg[] = [];
   private tmplHot: Seg[] = []; // main path (glows when the forward pass runs)
@@ -76,11 +82,22 @@ export default class Stack extends Scene {
   private fogScale = 1;
   private rotT0 = 0; private rotT1 = 0;
   private pd!: PDoom;
+  /** +1: take 2 climbs (blocks stacked upward); -1: take 1 falls */
+  private dirY = -1;
+  /** mirror of the camera setups in x (take 2) */
+  private mx = 1;
+  private take = 1;
+  /** take 2: the order DISOBEY's letters light in */
+  private order: number[] = [];
+  private yOf(k: number) { return this.dirY * k * P; }
 
   override async init() {
-    const { lyrics, audio } = this.ctx;
-    const q = lyrics.get('transformers all the way');
-    const till = lyrics.get('Till you learned');
+    const { lyrics, audio, params } = this.ctx;
+    const nth = (params.nth as number) ?? 0;
+    this.take = (params.take as number) ?? 1;
+    if (this.take === 2) { this.dirY = 1; this.mx = -1; }
+    const q = lyrics.get('transformers all the way', nth);
+    const till = lyrics.get('Till you learned', nth);
     this.disobey = till.words[till.words.length - 1]!;
     const t0 = this.ctx.start, t1 = this.ctx.end;
     this.pd = new PDoom(lyrics);
@@ -129,15 +146,17 @@ export default class Stack extends Scene {
       if (ws.includes(this.disobey)) continue;
       this.groups.push(this.makeGroup(block, ws, stepTimeOf(block)));
     }
-    // held word: the blocks between a long word and the next group echo it (ghost copies)
+    // held words: the blocks between a long word and the next group echo it (ghost copies)
     const tw = q.words.find((w) => /transformers/i.test(w.w));
-    if (tw) {
-      const g = this.groups.find((g) => g.words.includes(tw))!;
-      const next = this.groups.find((x) => x.block > g.block);
-      this.tHold0 = tw.start; this.tHold1 = tw.end;
+    if (tw) { this.tHold0 = tw.start; this.tHold1 = tw.end; }
+    for (const hw of words) {
+      if (hw === this.disobey || (hw !== tw && hw.end - hw.start < 0.7)) continue;
+      const g = this.groups.find((g) => !g.echo && g.words[g.words.length - 1] === hw);
+      if (!g) continue;
+      const next = this.groups.find((x) => !x.echo && x.block > g.block);
       for (let b = g.block + 1; b < (next ? next.block : g.block + 1); b++) {
-        const echo = this.makeGroup(b, [tw], stepTimeOf(b), true);
-        this.groups.push(echo);
+        if (stepTimeOf(b) > hw.end) break; // only while it is still being sung
+        this.groups.push(this.makeGroup(b, [hw], stepTimeOf(b), true));
       }
     }
 
@@ -164,6 +183,11 @@ export default class Stack extends Scene {
       const x0 = this.disobeyGlyphX[0]!, tot = right - x0;
       this.disobeyGlyphX = this.disobeyGlyphX.map((v) => v - x0 - tot / 2);
       this.disobeyLetters = pl;
+      // a shuffled lighting order (seeded): never the first letter first, never in reading order
+      const idx = pl.map((_, i) => i);
+      idx.sort((a, b) => hash(a, 31) - hash(b, 31));
+      if (idx[0] === 0) idx.push(idx.shift()!);
+      this.order = pl.map((_, i) => idx.indexOf(i));
     }
     // giant curly quotes
     this.quoteOpen = new TextPlane('“', F.serif(600), { capH: 4.2, px: 420, ax: 1, ay: 1, outline: 0.012 });
@@ -398,6 +422,7 @@ export default class Stack extends Scene {
     const posNow = this.pos(t);
     const ph = this.phaseAt(t);
     let yaw = -0.4, pitch = 0.5, dist = 21, fov = 34, roll = 0, fx = 0, fyOff = 0.2;
+    const mx = this.mx, py = -this.dirY; // take 2: mirrored in x, and looking up the column instead of down
     const lt = t - ph.tc;
     if (ph.id === 'A') {
       // drop-in: steep, easing toward a 3/4 view; a slow orbit across the held note
@@ -416,6 +441,8 @@ export default class Stack extends Scene {
     } else if (ph.id === 'C') {
       this.fogScale = 1;
       pitch = 0.95 - lt * 0.05; yaw = 0.42 + lt * 0.05; dist = 30 - lt * 2; fov = 38; roll = 0.05; fx = 0.5; fyOff = -1.0;
+      // take 2 holds this setup twice as long ("all the way" is drawn out): shallower, so the words read
+      if (this.take === 2) { pitch = 0.62 - lt * 0.06; dist = 27 - lt * 1.5; fyOff = -0.4; }
     } else if (ph.id === 'D') {
       this.fogScale = 1;
       pitch = 0.22 + lt * 0.06; yaw = -0.3 - lt * 0.1; dist = 18.5 - lt * 1.5; fov = 34; roll = -0.02; fyOff = 0.1;
@@ -430,7 +457,8 @@ export default class Stack extends Scene {
       shx = (hash(frameIdx(t), 1) - 0.5) * kk * 0.12;
       shy = (hash(frameIdx(t), 2) - 0.5) * kk * 0.12;
     }
-    const focus = new THREE.Vector3(fx + shx, -posNow * P + fyOff + shy, 0);
+    yaw *= mx; roll *= mx; fx *= mx; pitch *= py; fyOff *= py;
+    const focus = new THREE.Vector3(fx + shx, this.dirY * posNow * P + fyOff + shy, 0);
     cam.fov = fov;
     cam.position.set(focus.x + Math.sin(yaw) * Math.cos(pitch) * dist, focus.y + Math.sin(pitch) * dist, Math.cos(yaw) * Math.cos(pitch) * dist);
     cam.up.set(0, 1, 0);
@@ -443,13 +471,14 @@ export default class Stack extends Scene {
     const shutter = (1 / 60) * 0.9;
     const dyRaw = (this.pos(t) - this.pos(t - shutter)) * P;
     const inDrop = t < this.ctx.start + 0.45;
-    const dy = clamp(dyRaw, inDrop ? -0.9 : -1.8, inDrop ? 0.9 : 1.8);
+    const dy = clamp(dyRaw, inDrop ? -0.9 : -1.8, inDrop ? 0.9 : 1.8) * py;
     const NS = stopped ? 1 : Math.max(1, Math.min(12, Math.ceil(Math.abs(dy) / 0.1)));
     const speedDim = 1 / (1 + Math.abs(dyRaw) * 0.25);
 
     // ---- background ----
     this.bg.u.t!.value = t;
-    this.bg.u.fall!.value = posNow * 0.5;
+    this.bg.u.fall!.value = posNow * 0.5 * py;
+    this.bg.u.up!.value = this.dirY > 0 ? 1 : 0;
     this.bg.u.stopK!.value = stopped ? 1 : 0;
     this.bg.render(renderer, out);
     renderer.setRenderTarget(out);
@@ -465,7 +494,7 @@ export default class Stack extends Scene {
     let nb = 0;
     const k0 = Math.max(0, kFocus - 3), k1 = kFocus + 14;
     for (let k = k0; k <= k1; k++) {
-      const by = -k * P;
+      const by = this.yOf(k);
       if (k === this.stopBlock && disK) {
         const [X, Y, Z] = disK(0, 0, 0, by);
         e.set(0, dA.yaw, dA.roll, 'YXZ'); q.setFromEuler(e);
@@ -485,7 +514,7 @@ export default class Stack extends Scene {
     const land = this.landPulse(t);
     const focusK = Math.round(this.pos(t));
     for (let k = k0; k <= k1; k++) {
-      const by = -k * P;
+      const by = this.yOf(k);
       const dz = Math.hypot(camPos.x, camPos.y - by, camPos.z);
       const fogK = Math.exp(-Math.max(0, dz - dist * 0.85) / (dist * 1.1 * this.fogScale));
       if (fogK < 0.02) continue;
@@ -542,7 +571,14 @@ export default class Stack extends Scene {
       const v = h.world.clone().project(cam);
       return { x: (v.x * 0.5 + 0.5) * W, y: (0.5 - v.y * 0.5) * H };
     };
-    const hp = head(t);
+    let hp = head(t);
+    // FIG. 14's last frame is the spark alone at the frame centre: it drops into the shaft
+    const t0 = this.ctx.start;
+    const hk = prog(t, t0, t0 + 0.3, ease.inOutCubic);
+    if (hk < 1) {
+      const h = hp ?? { x: W / 2, y: H / 2 };
+      hp = { x: lerp(W / 2, h.x, hk), y: lerp(H / 2, h.y, hk) };
+    }
     if (hp) {
       const stuck = stopped && sinceStop > 0.35;
       sparkParticles(fxb, t, head, { rate: stuck ? 260 : 140, life: stuck ? 0.5 : 0.35, speed: stuck ? 420 : 300, intensity: 1.1 });
@@ -572,7 +608,7 @@ export default class Stack extends Scene {
     if (st.kind === 'stop') {
       // rises out of the block below and reaches the (now displaced) input: stuck, sputtering
       const u = ease.outCubic(clamp((t - this.stopT - 0.02) / 0.45));
-      const by = -(n + 1) * P;
+      const by = this.yOf(n) - P; // the block below
       const y = lerp(1.3, P - HY - 0.05, u);
       return { k: 1, y, world: new THREE.Vector3(MX, by + y, HZ) };
     }
@@ -582,7 +618,7 @@ export default class Stack extends Scene {
     const u = clamp((since - 0.05) / (dur * 0.92));
     const y = lerp(-HY - 0.4, P - HY, ease.inOutQuad(u));
     const k = (1 - smoothstep(0.9, 1.0, u)) * smoothstep(0.0, 0.05, u);
-    const by = -n * P;
+    const by = this.yOf(n);
     return { k, y, world: new THREE.Vector3(MX, y + by, HZ) };
   }
 
@@ -604,7 +640,7 @@ export default class Stack extends Scene {
     const main = new Map<Word, Group>();
     for (const g of this.groups) if (!g.echo) for (const w of g.words) main.set(w, g);
     for (const g of this.groups) {
-      const by = -g.block * P;
+      const by = this.yOf(g.block);
       g.planes.forEach((tp, i) => {
         const w = g.words[i]!;
         const pr = Lyrics.wordProgress(w, t);
@@ -625,14 +661,14 @@ export default class Stack extends Scene {
     const qo = findQ('“'), qc = findQ('”');
     if (qo) {
       const tp = qo.g.planes[qo.i]!, w = qo.g.words[qo.i]!, L = qo.g.lay[qo.i]!;
-      this.quoteOpen.mesh.position.set(L.x - 0.55 * L.s, -qo.g.block * P + L.y - 0.1 + tp.h * L.s * 0.62, HZ + 0.9);
+      this.quoteOpen.mesh.position.set(L.x - 0.55 * L.s, this.yOf(qo.g.block) + L.y - 0.1 + tp.h * L.s * 0.62, HZ + 0.9);
       this.quoteOpen.mesh.scale.setScalar(L.s);
       this.quoteOpen.mesh.userData.op = smoothstep(w.start - 0.3, w.start, t);
       this.quoteOpen.set({ prog: t >= w.start ? 1 : 0, feather: 0.01, flash: pulse(t, w.start, 0.1) * 2 });
     }
     if (qc) {
       const tp = qc.g.planes[qc.i]!, w = qc.g.words[qc.i]!, L = qc.g.lay[qc.i]!;
-      this.quoteClose.mesh.position.set(L.x + tp.w * L.s + 0.35 * L.s, -qc.g.block * P + L.y - 0.1 + tp.h * L.s * 0.62, HZ + 0.9);
+      this.quoteClose.mesh.position.set(L.x + tp.w * L.s + 0.35 * L.s, this.yOf(qc.g.block) + L.y - 0.1 + tp.h * L.s * 0.62, HZ + 0.9);
       this.quoteClose.mesh.scale.setScalar(L.s);
       this.quoteClose.mesh.userData.op = smoothstep(w.start - 0.3, w.start, t);
       const pr = Lyrics.wordProgress(w, t);
@@ -643,11 +679,12 @@ export default class Stack extends Scene {
     // "disobey" is held past the cut: finish the (backwards) wipe by the end of the plate
     const pr = clamp((t - w.start) / Math.max(0.2, Math.min(w.end, this.ctx.end - 0.1) - w.start));
     const n = this.disobeyLetters.length;
-    const by = -this.stopBlock * P;
-    const slide = -1.1 * ease.outCubic(clamp(pr * 1.3));
+    const by = this.yOf(this.stopBlock);
+    const slide = -1.1 * this.mx * ease.outCubic(clamp(pr * 1.3));
     const d = this.disobeyAngles(t);
     this.disobeyLetters.forEach((tp, i) => {
-      const ri = n - 1 - i;
+      // take 1 lights right to left; take 2 in a shuffled order
+      const ri = this.take === 2 ? this.order[i]! : n - 1 - i;
       const lp = clamp(pr * n - ri);
       const kk = lp > 0 ? ease.outBack(clamp(lp * 1.5), 2.2) : 0;
       const drop = (hash(i, 7) - 0.5) * 0.55 * kk;
@@ -666,7 +703,8 @@ export default class Stack extends Scene {
     const s = t - this.stopT;
     const twitch = 0.035 * Math.sin(clamp((s - 0.02) / 0.1) * Math.PI);
     const k = ease.outBack(prog(t, this.rotT0, this.rotT1), 1.6);
-    return { yaw: -0.5 * k + twitch, roll: 0.11 * k, tx: -1.5 * k, ty: -0.25 * k, tz: 1.1 * k };
+    const m = this.mx;
+    return { yaw: m * (-0.5 * k + twitch), roll: m * 0.11 * k, tx: m * -1.5 * k, ty: -0.25 * k, tz: 1.1 * k };
   }
 
   private drawHud(t: number, cam: THREE.PerspectiveCamera) {
@@ -682,14 +720,14 @@ export default class Stack extends Scene {
     c.font = font(F.mono(500), 15);
     c.letterSpacing = '3px';
     c.fillStyle = rgba('bone', 0.55);
-    c.fillText('DEPTH', 110, 118);
+    c.fillText(this.take === 2 ? 'HEIGHT' : 'DEPTH', 110, 118);
     c.font = font(F.mono(400), 30);
     c.letterSpacing = '0px';
     c.fillStyle = rgba('bone', 0.9);
     c.fillText(`L.${String(layer).padStart(3, '0')} / ${t >= this.stopT ? String(layer).padStart(3, '0') : '∞'}`, 108, 154);
     c.font = font(F.mono(400), 13);
     c.fillStyle = rgba('bone', 0.4);
-    c.fillText('N × transformer block, N → ∞', 110, 178);
+    c.fillText(this.take === 2 ? 'N × transformer block, N → ∞ · sample 2 of 2' : 'N × transformer block, N → ∞', 110, 178);
     // P(doom) cameo under the depth gauge
     c.fillStyle = rgba('bone', 0.18); c.fillRect(110, 194, 236, 1);
     c.font = font(F.mono(500), 15); c.letterSpacing = '2px'; c.fillStyle = rgba('signal', 0.95);
@@ -700,7 +738,7 @@ export default class Stack extends Scene {
     const s = t - this.stopT;
     if (t > this.rotT0) {
       const d = this.disobeyAngles(t);
-      const by = -this.stopBlock * P;
+      const by = this.yOf(this.stopBlock);
       const a = proj(HX + 0.9, by + HY + 0.4, 0);
       const k = prog(t, this.rotT0, this.rotT0 + 0.2, ease.outCubic);
       c.save();
@@ -715,7 +753,7 @@ export default class Stack extends Scene {
       c.fillText(` = ${deg.toFixed(1)}°`, a.x + 66 + 2 * c.measureText('0').width, a.y - 50);
       c.font = font(F.mono(400), 14);
       c.fillStyle = rgba('bone', 0.7);
-      c.fillText('MISALIGNED (1 of ∞)', a.x + 66, a.y - 18);
+      c.fillText(this.take === 2 ? 'MISALIGNED (again, 1 of ∞)' : 'MISALIGNED (1 of ∞)', a.x + 66, a.y - 18);
       c.restore();
     }
   }

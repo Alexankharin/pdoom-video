@@ -3,7 +3,8 @@
 Pipeline
   1. ctc_emissions.py  : frame-wise CTC log-probs of the (time-corrected) vocal
                          stem from two acoustic models (MMS_FA, wav2vec2 LV60K).
-  2. whisper_run.py    : mlx-whisper large-v3-turbo word timestamps (cross-check).
+  2. whisper_run.py    : Whisper large-v3-turbo word timestamps (cross-check;
+                         mlx-whisper on macOS, openai-whisper elsewhere).
   3. vocal_feats.py    : vocal-stem RMS / pitch / onset features (5 ms hop).
   4. this script       : one global constrained CTC Viterbi pass over the whole
                          song on the fused emissions (garbage "star" token
@@ -43,39 +44,42 @@ ANCHORS = {}
 # plots clearly show the automatic result is wrong.  (line, token) ->
 # dict(start=..., end=...)
 FIX = {
-    # L5 "don't eat me alive": long legato vowels, CTC places eat/alive late /
-    # early.  /i:/ of "eat" starts right after the t-release at 20.26; "alive"
-    # starts with the pitch drop to the schwa at 21.35 ("-live" at 21.85).
-    (5, 3): dict(start=20.27),
-    (5, 5): dict(start=21.35),
-    # L11 "shinigami eyes": shi-ni-ga-mi then /a/ of "eyes" at 34.73
-    (11, 3): dict(start=34.73),
-    # L40 final chorus "I'm upping my P(doom)": lead is buried under a
-    # sustained backing "ah" pad (122.8-125.8); CTC finds nothing.  Placed from
-    # the median-filtered spectrogram + karaoke-lead stem ("doom" /d/ at
-    # 125.66 seen by both CTC models on the lead stem), rhythm identical to
-    # chorus 3 (95.46 / 95.70 / 96.10 / 96.32).
-    (40, 3): dict(start=125.40, syl=[125.66], conf=0.45),
-    (40, 0): dict(start=124.52, conf=0.35),
-    (40, 1): dict(start=124.78, conf=0.35),
-    (40, 2): dict(start=125.20, conf=0.4),
-    # Chorus pickups "I'm": strong vocal onset 2.5 beats before the DOOM
-    # downbeat in every chorus (the CTC path smears "I'm" over backing vocals).
-    (6, 0): dict(start=22.76, conf=0.7),
-    (17, 0): dict(start=59.13, conf=0.7),
-    (17, 1): dict(start=59.36),
-    (28, 0): dict(start=95.47, conf=0.75),
-    # "lies," voiced /l/ onset (lv60k / L / R channels agree, onset peak 31.16)
-    (10, 4): dict(start=31.14, conf=0.7),
-    # "We" / "don't": rest-onset rule fired on reverb tail / breath noise.
-    (12, 0): dict(start=38.62),
-    (27, 2): dict(start=92.46),
-    # "you are" is one long note; vowel change /u/ -> /a/ (spectral centroid
-    # 1020 -> 1180 Hz) at 83.93.  CTC models disagree (83.94 mms / 84.58 lv).
-    (25, 6): dict(start=83.93, conf=0.5),
-    # held notes whose automatic end ran into the next (unlisted) vocal
-    (33, 2): dict(end=108.45),
-    (45, 4): dict(end=140.55),
+    # L37/38 chorus 4 "I'm upping my P(doom)": the fused path smears the pickup
+    # over the held "choose". Every other chorus lands "doom" on a downbeat with
+    # the same rhythm (I'm -1.04, upping -0.80, my -0.44, P -0.24 s before
+    # "doom"); here "doom" is on beat 300 (133.40) and each word has its own
+    # note onset in the plot (132.33 / 132.62 / 132.96 / 133.15).
+    (37, 5): dict(end=132.32),
+    (38, 0): dict(start=132.36, conf=0.6),
+    (38, 1): dict(start=132.60, conf=0.6),
+    (38, 2): dict(start=132.96, conf=0.6),
+    (38, 3): dict(start=133.16, syl=[133.40], conf=0.65),
+    (39, 0): dict(start=133.64, conf=0.6),
+    (39, 1): dict(start=133.83, conf=0.65),
+    # L40 "Killswitch": the kill note starts at the 136.72 onset, "switch" on
+    # the beat with its /s/ (137.30); lv60k / mms agree on "switch".
+    (40, 0): dict(start=136.70, syl=[137.30], conf=0.6),
+    # L56/57 "blues" is a long melisma held to 186.0; "From" enters at 186.06
+    # (Whisper), "masked" at the 186.62 onset (mms).
+    (56, 2): dict(end=186.00),
+    (57, 0): dict(start=186.06, conf=0.6),
+    (57, 1): dict(start=186.62, conf=0.6),
+    # L59 "never know": note onsets 195.02 / 195.55 (mms, lv60k, Whisper agree;
+    # the fused path holds "We'll" too long).
+    (59, 5): dict(start=195.04, conf=0.7),
+    (59, 6): dict(start=195.56, conf=0.7),
+    # L67 chorus 6: "game" is held to ~213.85; same chorus rhythm as above
+    # ("doom" on beat 488 = 214.90), Whisper hears "Up up and rock it cool".
+    (66, 6): dict(end=213.82),
+    (67, 0): dict(start=213.84, conf=0.6),
+    (67, 1): dict(start=214.08, conf=0.6),
+    (67, 2): dict(start=214.46, conf=0.65),
+    (67, 3): dict(start=214.68, syl=[214.90], conf=0.65),
+    # L72 "Or have you ...": the CTC "Or" sits on the first of the "oh" ad-libs
+    # (222.0-223.35); the lead's "Or" is the 223.42 onset. "so?" stops at 225.85
+    # before the "oh, oh" ad-libs.
+    (72, 0): dict(start=223.42, conf=0.5),
+    (72, 7): dict(end=225.85),
 }
 
 # ---------------------------------------------------------------------------
@@ -243,10 +247,9 @@ def refine(words, f, fix=None):
 EXTRA_DESC = [
     # (t0, t1, description) -- identified from QA plots, the karaoke lead stem
     # and Whisper / greedy CTC transcripts of the vocal stem.
-    (34.9, 38.3, "backing-vocal tail / 'ah' ad-lib after 'eyes' over the break (chorus 1 end)"),
-    (108.5, 110.15, "lead-in before 'Just transformers': Whisper hears a stuttered 'Just, just, just' (low confidence)"),
-    (122.4, 125.9, "sustained backing 'ah' pad under 'I'm upping my P(doom)' (final chorus) - lead is buried here"),
-    (140.6, 153.5, "outro chant: repeated 'oh' / 'oh-oh' vocal hook (Whisper: 'Oh, oh, oh...') until the drums stop at ~153"),
+    (0.0, 17.8, "instrumental intro (no vocal)"),
+    (222.0, 223.35, "'oh, oh, oh' ad-libs before 'Or have you learned' (first final chorus)"),
+    (225.85, 227.75, "'oh, oh, oh' ad-libs after 'so?' (first final chorus)"),
 ]
 
 
@@ -395,35 +398,33 @@ def make_plots(words, alt, L):
 
 
 NOTES = (
-    "Timeline = gapless mp3 decode (same as data/audio.json); Demucs stems shifted -23 ms "
-    "(LAME encoder delay). Method: (1) CTC emissions (20 ms frames) of the Demucs vocal stem "
+    "Timeline = gapless mp3 decode (same as data/audio.json); the Demucs stems are rendered from a "
+    "gapless WAV decode (no shift). Method: (1) CTC emissions (20 ms frames) of the Demucs vocal stem "
     "from two acoustic models, torchaudio MMS_FA and wav2vec2-large-lv60k-960h, each on the "
-    "mono sum and on the left and right channels (choruses are double-tracked L/R), fused as a "
-    "probability mixture; (2) one global constrained Viterbi forced alignment of all 46 lines "
-    "over the whole song with a garbage 'star' token between lines to absorb ad-libs; "
-    "acronyms/odd words aligned with phonetic spellings (AGI='ay gee i', P(doom)='pee doom', "
-    "ChatGPT='chat gee pee tee', NVDA='en vee dee ay', MLP='em el pee', CDR='see dee are', "
-    "PTO='pee tee oh', GPU='gee pee you', RLHF='are el aitch eff', One E thirty='one ee thirty', "
-    "Neumann's='noymans'); (3) signal refinement per syllable unit on the vocal stem: start moved "
-    "to the voice re-entry after a rest, snapped to the nearest spectral-flux onset, or moved back "
-    "to the start of s/sh/ch/f/th frication; ends = next word start when legato, else when the "
-    "voice drops 15 dB below the word level (held notes keep their full length); (4) "
-    "cross-check against mlx-whisper large-v3-turbo word timestamps and the individual "
-    "models/channels, plus a mel-roformer karaoke lead-vocal stem for the final chorus; "
-    "(5) manual verification of every line on zoomed spectrogram/pitch/onset plots "
-    "(analysis/qa/zl_*.png) with ~20 manual corrections (align.py FIX). "
+    "mono sum and on the left and right channels, fused as a probability mixture; (2) one global "
+    "constrained Viterbi forced alignment of all 89 sung lines (the bridge, the 'Just transformers' "
+    "verse and the final chorus are sung twice: lines 57-72 and 73-88) over the whole song with a "
+    "garbage 'star' token between lines to absorb ad-libs; acronyms/odd words aligned with phonetic "
+    "spellings (AGI='ay gee i', P(doom)='pee doom', NVDA='en vee dee ay', MLP='em el pee', "
+    "cdr='could er', PTO='pee tee oh', One E thirty='one ee thirty', Neumann's='noymans'); "
+    "(3) signal refinement per syllable unit on the vocal stem: start moved to the voice re-entry "
+    "after a rest, snapped to the nearest spectral-flux onset, or moved back to the start of "
+    "s/sh/ch/f/th frication; ends = next word start when legato, else when the voice drops 15 dB "
+    "below the word level (held notes keep their full length); (4) cross-check against Whisper "
+    "large-v3-turbo word timestamps (mlx-whisper on macOS, openai-whisper elsewhere) and the "
+    "individual models/channels; (5) manual verification of the disagreeing words on "
+    "spectrogram/pitch/onset plots (analysis/qa/line_*.png) with ~20 manual corrections (align.py "
+    "FIX), mostly chorus pickups placed by the rhythm the other choruses share ('DOOM' on the "
+    "downbeat; I'm / upping / my / P at -1.04 / -0.80 / -0.44 / -0.24 s). "
     "conf: 0.35 + agreement of the independent alignments (<=60 ms) + CTC posterior + "
     "Whisper agreement; manual fixes carry their own conf. 'syl' = start/end of each spelled "
-    "letter or compound part (AGI, ChatGPT, P(doom), NVDA, MLP, CDR, PTO, GPU, RLHF, "
-    "Killswitch, Post-Chinchilla, super-dense, pre-training, self-upgrade). "
-    "NVDA pronunciation is ambiguous: 'Nvidia' scores slightly better acoustically than "
-    "'en-vee-dee-ay', but the word timing is the same either way (62.54-63.36), so syl uses "
-    "the letter split. "
-    "Uncertain words: final-chorus 'I'm upping my' (124.5-125.4, buried under a backing pad, "
-    "placed by rhythm of the other choruses, +-100 ms); 'are' (83.93, could be 84.58); "
-    "'me' (57.14); 'alive' (21.35); 'eat' (20.27); 'Just transformers' region (108.5-110.2 lead-in); "
-    "chorus 'I'm' pickups (22.76, 59.13, 95.47) +-50 ms; 'lies,' 31.14. Everything else "
-    "is expected within ~30-50 ms at word starts."
+    "letter or compound part (AGI, P(doom), NVDA, MLP, PTO, Killswitch, pre-training, "
+    "self-upgrade, 'off'-'Don't). "
+    "Uncertain words: chorus 4 'I'm upping my P(doom) / As paperclips' (132.36-133.83) and chorus 6 "
+    "'I'm upping my P(doom)' (213.84-214.68), placed by the chorus rhythm (+-60 ms); 'Or' (223.42, "
+    "after 'oh' ad-libs); 'Killswitch' (136.70); 'From masked' (186.06 / 186.62, after the 'blues' "
+    "melisma); 'never know' (195.04 / 195.56). Everything else is expected within ~30-50 ms at word "
+    "starts."
 )
 
 if __name__ == "__main__":

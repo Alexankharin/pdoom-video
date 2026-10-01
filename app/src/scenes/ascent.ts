@@ -1,32 +1,53 @@
-// FIG. 6 — "Ascent (log scale)". Chorus 2 after the hook, four quick movements:
-//  A. "I hear the basilisk boom": an engraved serpent eye snaps open (shockwave, shake).
-//  B. "NVDA to the moon": the slit pupil match-cuts to a candle; the price (the spark) goes
-//     vertical, the camera tilts up to an engraved moon in banknote guilloché.
+// FIG. 6 — "Ascent (log scale)". One module, two entries (param `part`):
+//
+// part "basilisk" (chorus 2, after hook 2):
+//  A. "I hear the basilisk boom": the engraved serpent eye, lids sealed on the lyric, snaps open on
+//     "boom" (shockwave, BOOM riding the rings).
+//  N. "A god that hasn't happened yet / Already says I'm in its debt": the camera pulls out of the
+//     eye and it is the portrait in an ACAUSAL PROMISSORY NOTE (black note, white-line guilloché),
+//     issue date "not yet"; the eye reads along with the lyric, then turns to look at the viewer on
+//     "I'm"; the amount owed compounds on every beat, and "debt" heats the rosettes on the cut.
+//
+// part "market" (chorus 3, after hook 3):
+//  B. "NVDA to the moon": a vertical white-hot line pulls back into a candle; the price (the spark)
+//     goes vertical, the camera tilts up to an engraved moon in banknote guilloché.
 //  C. "The Omega Point's coming soon": every line converges into one white-hot point.
-//  D. "One E thirty flops a second": a 31-drum mechanical odometer rolls to 10^30.
+//  K. "Tickets to the Chinese room": three admission tickets shoot up out of the dark; the hero's
+//     vignette is the room plate's library aisle; on "room" its stub is torn off, and the camera
+//     pushes into the numbering-machine serial…
+//  D. "One E thirty flops a second": …whose digits are the 31-drum odometer rolling to 10^30.
 import * as THREE from 'three';
 import { Scene, type Frame, type PostOverrides } from '../engine/scene';
-import { Layer2D, W, H, makeRT } from '../engine/gl';
+import { Layer2D, W, H, makeRT, clearRT } from '../engine/gl';
 import { LineBatch } from '../engine/lines';
 import { LIN, rgba } from '../engine/palette';
 import { F, font, glyphX, layout, textPath2D } from '../engine/type';
 import { Lyrics, norm, type Line, type Word } from '../engine/lyrics';
-import { clamp, ease, hash, keys, lerp, mulberry32, prog, pulse, TAU, frameIdx } from '../engine/util';
+import { clamp, ease, hash, lerp, mulberry32, prog, pulse, TAU, frameIdx } from '../engine/util';
 import { makeEyePass, EYE } from './ascent-eye';
 import { makeNotePass, makeCompPass, makeCandles, DEC, MOON, NOTE, type Candle } from './ascent-note';
+import { makeDebtPass, DNOTE, OVAL, MEDAL } from './ascent-debt';
+import { makeTicketArt, TK, TK_RES } from './ascent-ticket';
 import { sparkHead, sparkParticles } from './_motifs';
 import { makeOdoPass, makeDigitAtlas, drumX, ODO } from './ascent-odo';
 import { PDoom, formatPDoom } from '../engine/hud';
 
-type Mv = 'A' | 'B' | 'C' | 'D';
+type Mv = 'A' | 'B' | 'C' | 'K' | 'D';
 
 function wordOf(l: Line, s: string): Word {
   const q = norm(s);
   return l.words.find((w) => norm(w.w).includes(q)) ?? l.words[0]!;
 }
 
+type ECam = { zoom: number; rot: number; cx: number; cy: number };
+type NCam = { x: number; y: number; z: number };
+/** A lyric row set on the note: words, font, and each word's x inside the row (kerned as one run). */
+type Row = { words: Word[]; text: string; fam: string; size: number; track: number; x: number; y: number; wx: number[]; width: number; caps: boolean };
+
 export default class Ascent extends Scene {
+  part: 'basilisk' | 'market' = 'market';
   eye = makeEyePass();
+  debt = makeDebtPass();
   note = makeNotePass();
   comp2 = makeCompPass();
   rtB = makeRT();
@@ -37,39 +58,90 @@ export default class Ascent extends Scene {
   odo = makeOdoPass(makeDigitAtlas());
   candles: Candle[] = makeCandles();
   nvdaPaths: { p: Path2D; x: number; w: number }[] = [];
-  rays: { a: number; r0: number; len: number; sp: number; ph: number; w: number; hot: boolean }[] = [];
+  tkPaths: { p: Path2D; x: number; w: number }[] = [];
+  tkArt: HTMLCanvasElement | null = null;
+  rows: Row[] = [];
+  looks: [number, number, number][] = [];
   pd!: PDoom;
   T = {
-    l1: null as unknown as Line, l2: null as unknown as Line, l3: null as unknown as Line, l4: null as unknown as Line,
-    boom: 0, nvda: 0, moon: 0, omega: 0, one: 0, second: 0,
-    cutB: 0, cutC: 0, cutD: 0,
+    l1: null as unknown as Line, l18: null as unknown as Line, l19: null as unknown as Line,
+    l2: null as unknown as Line, l3: null as unknown as Line, l30: null as unknown as Line, l4: null as unknown as Line,
+    boom: 0, pull0: 0, pull1: 0, al: 0, im: 0, debt: 0,
+    nvda: 0, moon: 0, omega: 0, tickets: 0, room: 0, one: 0, second: 0,
+    cutB: 0, cutC: 0, cutK: 0, cutD: 0,
   };
 
   override init() {
     const ly = this.ctx.lyrics;
     this.pd = new PDoom(ly);
-    const T = this.T;
+    this.part = this.ctx.params.part === 'basilisk' ? 'basilisk' : 'market';
+    if (this.part === 'basilisk') this.initBasilisk();
+    else this.initMarket();
+  }
+
+  initBasilisk() {
+    const ly = this.ctx.lyrics, T = this.T;
     T.l1 = ly.get('basilisk');
+    T.l18 = ly.get('hasn’t happened yet');
+    T.l19 = ly.get('in its debt');
+    const boom = wordOf(T.l1, 'boom');
+    T.boom = boom.start;
+    T.pull0 = boom.end - 0.02;
+    T.pull1 = T.pull0 + 0.62;
+    T.al = T.l19.words[0]!.start;
+    T.im = T.l19.words[2]!.start;
+    T.debt = wordOf(T.l19, 'debt').start;
+    // the note's lyric rows (world px, y up)
+    const mk = (words: Word[], fam: string, size: number, track: number, cx: number, y: number, caps: boolean): Row => {
+      const text = words.map((w) => (caps ? w.w.toUpperCase() : w.w)).join(' ');
+      const width = layout(text, fam, size, track).width;
+      const wx: number[] = [];
+      let k = 0;
+      for (const w of words) { wx.push(glyphX(text, k, fam, size, track)); k += Array.from(w.w).length + 1; }
+      return { words, text, fam, size, track, x: cx - width / 2, y, wx, width, caps };
+    };
+    const cx = 330;
+    const w18 = T.l18.words;
+    this.rows = [
+      mk(w18.slice(0, 3), F.serif(600), 74, 5, cx, 212, true),
+      mk(w18.slice(3), F.serif(600), 74, 5, cx, 124, true),
+      mk(T.l19.words, F.serif(600, true), 82, 0, cx, -64, false),
+    ];
+    // where the basilisk looks: along the words as they are sung, then at the viewer on "I'm"
+    const looks: [number, number, number][] = [[T.pull0, 0.0, 0.0]];
+    this.rows.forEach((r, ri) => r.words.forEach((w, wi) => {
+      if (ri === 2 && wi >= 2) return;
+      const wx = r.x + r.wx[wi]! + 60;
+      looks.push([w.start, 0.05 + 0.1 * clamp((wx + 200) / 1100), ri === 0 ? 0.07 : ri === 1 ? 0.03 : -0.05]);
+    }));
+    looks.push([T.im, 0, 0]);
+    this.looks = looks;
+  }
+
+  initMarket() {
+    const ly = this.ctx.lyrics, T = this.T;
     T.l2 = ly.get('to the moon');
     T.l3 = ly.get('Omega');
+    T.l30 = ly.get('Tickets to');
     T.l4 = ly.get('flops');
-    T.boom = wordOf(T.l1, 'boom').start;
     T.nvda = T.l2.words[0]!.start;
     T.moon = wordOf(T.l2, 'moon').start;
     T.omega = T.l3.words[0]!.start;
+    T.tickets = T.l30.words[0]!.start;
+    T.room = wordOf(T.l30, 'room').start;
     T.one = T.l4.words[0]!.start;
     T.second = wordOf(T.l4, 'second').start;
-    T.cutB = this.snap(T.nvda);
+    T.cutB = this.ctx.start;
+    T.cutC = T.omega;
+    T.cutK = T.tickets;
+    T.cutD = this.snap(T.one);
     // NVDA lettering outlines (banknote-style hatched letters)
     const fam = F.archivo(125, 900), size = 196, track = 10;
     const lay = layout('NVDA', fam, size, track);
     this.nvdaPaths = lay.glyphs.map((g) => ({ p: textPath2D(g.ch, fam, size, 0, 0), x: g.x, w: g.w }));
-    const rnd = mulberry32(606);
-    for (let i = 0; i < 900; i++) {
-      this.rays.push({ a: rnd() * TAU, r0: 150 + rnd() * 1500, len: 60 + rnd() * 420, sp: 0.6 + rnd() * 1.6, ph: rnd(), w: 0.6 + rnd() * 1.4, hot: rnd() < 0.08 });
-    }
-    T.cutC = T.omega;
-    T.cutD = this.snap(T.one);
+    const tl = layout('TICKETS', fam, 106, 6);
+    this.tkPaths = tl.glyphs.map((g) => ({ p: textPath2D(g.ch, fam, 106, 0, 0), x: g.x, w: g.w }));
+    this.tkArt = makeTicketArt();
   }
 
   /** Nearest beat if close to t (cuts land on the grid), else t itself. */
@@ -86,26 +158,28 @@ export default class Ascent extends Scene {
 
   movement(t: number): Mv {
     const T = this.T;
-    if (t < T.cutB) return 'A';
+    if (this.part === 'basilisk') return 'A';
     if (t < T.cutC) return 'B';
-    if (t < T.cutD) return 'C';
+    if (t < T.cutK) return 'C';
+    if (t < T.cutD) return 'K';
     return 'D';
   }
 
   render(f: Frame, out: THREE.WebGLRenderTarget): PostOverrides {
     switch (this.movement(f.t)) {
-      case 'A': return this.renderA(f, out);
+      case 'A': return this.renderBasilisk(f, out);
       case 'B': return this.renderB(f, out);
       case 'C': return this.renderC(f, out);
+      case 'K': return this.renderK(f, out);
       default: return this.renderD(f, out);
     }
   }
 
-  // ------------------------------------------------------------------ A: the basilisk eye
-  eyeCam(t: number) {
+  // ------------------------------------------------------------------ basilisk: the eye, then the note
+  eyeCam(t: number): ECam {
     const T = this.T, s0 = this.ctx.start;
     const tb = T.boom;
-    // the camera steps in on each sung word (and leans, alternating), then slams on "boom"
+    // the camera steps in on each sung word (and leans, alternating), then settles level on "boom"
     const ws = T.l1.words.filter((w) => norm(w.w) !== 'boom');
     let zoom = 0.68 * (1 + 0.015 * prog(t, s0, tb));
     const leans = [-0.07, -0.03, -0.055, -0.015, 0.02];
@@ -115,26 +189,69 @@ export default class Ascent extends Scene {
       zoom *= Math.pow(1.075, k);
       rot += k * ((leans[Math.min(i + 1, 4)] ?? 0) - (leans[Math.min(i, 4)] ?? 0));
     });
-    rot = lerp(rot, 0, prog(t, tb, T.cutB, ease.inOutCubic));
+    rot = lerp(rot, 0, prog(t, tb, T.pull0, ease.inOutCubic));
     zoom += 0.18 * prog(t, tb, tb + 0.35, ease.outExpo);
-    zoom *= Math.pow(3.2, prog(t, lerp(tb, T.cutB, 0.35), T.cutB, ease.inCubic));
-    const cx = lerp(0.12, 0.0, prog(t, s0, tb + 0.3, ease.inOutCubic));
-    const cy = lerp(-0.06, 0.16, prog(t, s0, tb, ease.inOutCubic)) * (1 - prog(t, tb + 0.1, T.cutB, ease.inOutCubic)) + 0.02 * prog(t, tb + 0.1, T.cutB, ease.inOutCubic);
+    const cx = lerp(0.12, 0.0, prog(t, s0, T.pull0, ease.inOutCubic));
+    const cy = lerp(-0.06, 0.16, prog(t, s0, tb, ease.inOutCubic)) * (1 - prog(t, tb + 0.05, T.pull0, ease.inOutCubic)) + 0.02 * prog(t, tb + 0.05, T.pull0, ease.inOutCubic);
     return { zoom, rot, cx, cy };
   }
 
   /** Eye space (y up) -> canvas px (y down), matching the shader's camera. */
-  eyeToPx(ex: number, ey: number, cam: { zoom: number; rot: number; cx: number; cy: number }) {
+  eyeToPx(ex: number, ey: number, cam: ECam) {
     const dx = ex - cam.cx, dy = ey - cam.cy;
     const c = Math.cos(cam.rot), s = Math.sin(cam.rot);
     const px = cam.zoom * (c * dx + s * dy), py = cam.zoom * (-s * dx + c * dy);
     return { x: W / 2 + px * (H / 2), y: H / 2 - py * (H / 2) };
   }
 
-  renderA(f: Frame, out: THREE.WebGLRenderTarget): PostOverrides {
+  /** The note camera: out of the eye (which stays put on screen while it shrinks), then two framings. */
+  noteCam(t: number): NCam {
+    const T = this.T;
+    const e0 = this.eyeCam(T.pull0);
+    const sE = this.eyeToPx(0, 0, e0);
+    const z0 = (e0.zoom * (H / 2)) / OVAL.ew;
+    const Z1 = 0.97, C1 = { x: 0, y: 10 };
+    const sO1 = { x: W / 2 + (OVAL.x - C1.x) * Z1, y: H / 2 - (OVAL.y - C1.y) * Z1 };
+    const e = ease.outQuart(clamp((t - T.pull0) / (T.pull1 - T.pull0)));
+    let z = Math.pow(z0, 1 - e) * Math.pow(Z1, e);
+    const sx = lerp(sE.x, sO1.x, e), sy = lerp(sE.y, sO1.y, e);
+    let x = OVAL.x - (sx - W / 2) / z, y = OVAL.y + (sy - H / 2) / z;
+    // slow push through "a god that hasn't happened yet", one nudge per word
+    let nud = 0;
+    for (const w of T.l18.words) nud += ease.outExpo(clamp((t - w.start) / 0.25));
+    z *= 1 + 0.006 * nud * prog(t, T.pull0, T.pull1);
+    // "Already": reframe on the debt (clause + amount)
+    const r = ease.outExpo(clamp((t - T.al + 0.02) / 0.42));
+    z = lerp(z, 1.08, r); x = lerp(x, 60, r); y = lerp(y, -112, r);
+    z *= 1 + 0.02 * ease.outExpo(clamp((t - T.im) / 0.2)) + 0.07 * ease.outExpo(clamp((t - T.debt) / 0.06));
+    return { x, y, z };
+  }
+
+  /** The eye's camera that shows the eye inside the note's oval for note camera `cam`. */
+  eyeInNote(cam: NCam): ECam {
+    const zoom = (cam.z * OVAL.ew) / (H / 2);
+    const s = this.w2s(OVAL.x, OVAL.y, cam);
+    return { zoom, rot: 0, cx: -(s.x - W / 2) / (zoom * (H / 2)), cy: (s.y - H / 2) / (zoom * (H / 2)) };
+  }
+
+  lookAt(t: number) {
+    let lx = 0, ly = 0;
+    const L = this.looks;
+    for (let i = 0; i < L.length; i++) {
+      const [ts, x, y] = L[i]!;
+      const [, px, py] = i > 0 ? L[i - 1]! : [0, 0, 0];
+      const k = ease.outCubic(clamp((t - ts) / 0.16));
+      lx += (x - px) * k; ly += (y - py) * k;
+    }
+    return { x: lx, y: ly };
+  }
+
+  renderBasilisk(f: Frame, out: THREE.WebGLRenderTarget): PostOverrides {
     const { renderer, comp } = this.ctx;
     const T = this.T, t = f.t, tb = T.boom;
-    const cam = this.eyeCam(t);
+    const inNote = t >= T.pull0;
+    const ncam = inNote ? this.noteCam(t) : null;
+    const cam = ncam ? this.eyeInNote(ncam) : this.eyeCam(t);
     const u = this.eye.u;
     // before "boom" the lids stir: a hairline crack on each syllable of "basilisk"
     const bw = wordOf(T.l1, 'basilisk');
@@ -148,12 +265,15 @@ export default class Ascent extends Scene {
     u.uZoom!.value = cam.zoom;
     u.uRot!.value = cam.rot;
     (u.uCam!.value as THREE.Vector2).set(cam.cx, cam.cy);
-    // pupil: wide on the snap, contracting to a hairline slit that turns white-hot before the cut
-    const mid = lerp(tb, T.cutB, 0.5);
-    const pup = lerp(0.22, 0.07, prog(t, tb + 0.04, tb + 0.35, ease.outCubic));
-    u.uPupil!.value = lerp(pup, 0.004, prog(t, mid, T.cutB - 0.04, ease.inCubic));
-    u.uSlitGlow!.value = prog(t, mid, T.cutB, ease.inQuad);
-    u.uSlitW!.value = lerp(0.004, 0.0015, prog(t, mid, T.cutB));
+    // pupil: wide on the snap, a slit while it reads, wide again when it looks at you, a hairline on "debt"
+    let pup = lerp(0.22, 0.07, prog(t, tb + 0.04, tb + 0.35, ease.outCubic));
+    pup = lerp(pup, 0.27, prog(t, T.im, T.im + 0.22, ease.outCubic));
+    pup = lerp(pup, 0.025, prog(t, T.debt, T.debt + 0.04, ease.outCubic));
+    u.uPupil!.value = pup;
+    const look = this.lookAt(t);
+    (u.uLook!.value as THREE.Vector2).set(look.x, look.y);
+    u.uSlitGlow!.value = 0;
+    u.uSlitW!.value = 0.004;
     u.uShockR!.value = t < tb ? 0 : EYE.RI + (t - tb) * 3.4;
     u.uShockA!.value = t < tb ? 0 : Math.exp(-(t - tb) / 0.28);
     u.uLeak!.value = t < tb ? 0.45 + 0.9 * bp + 0.5 * prog(t, tb - 0.45, tb, ease.inQuad) : 0;
@@ -163,30 +283,42 @@ export default class Ascent extends Scene {
     const le = ease.outCubic(clamp((bIdx - bi) / 0.35));
     const rock = bi % 2 === 0 ? le : 1 - le;
     u.uLightA!.value = 2.05 + 0.3 * rock + (t > tb ? 0.25 : 0);
-    u.uBright!.value = 1.0;
-    this.eye.render(renderer, out);
+    u.uBright!.value = 1.0 + 0.6 * pulse(t, T.debt, 0.08);
+    const noteA = inNote ? prog(t, T.pull0, T.pull0 + 0.2, ease.outCubic) : 0;
+    const hot = t >= T.debt ? prog(t, T.debt, T.debt + 0.03) : 0;
+    if (!inNote) this.eye.render(renderer, out);
+    else {
+      this.eye.render(renderer, this.rtB);
+      const d = this.debt.u;
+      (d.uCam!.value as THREE.Vector2).set(ncam!.x, ncam!.y);
+      d.uZoom!.value = ncam!.z;
+      d.uT!.value = t;
+      d.uNoteA!.value = noteA;
+      d.uHot!.value = 0.4 * hot;
+      d.uEye!.value = this.rtB.texture;
+      this.debt.render(renderer, out);
+    }
 
-    // ---- lyric: "I HEAR THE BASILISK" set on the eyelid seam, split open by "boom"
     const L = this.L1; L.clear(); const c = L.ctx;
+    // ---- "I HEAR THE BASILISK" set on the eyelid seam, split open by "boom"
     const line = T.l1;
-    const words = line.words.filter((w) => norm(w.w) !== 'boom');
-    const fam = F.archivo(125, 700), size = Math.round(54 * Math.min(1, cam.zoom / 0.95)), track = 16;
-    const txt = words.map((w) => w.w.toUpperCase()).join(' ');
-    const lay = layout(txt, fam, size, track);
-    const charWord: number[] = [], charIdx: number[] = [];
-    words.forEach((w, wi) => {
-      for (let k = 0; k < w.w.length; k++) { charWord.push(wi); charIdx.push(k); }
-      if (wi < words.length - 1) { charWord.push(-1); charIdx.push(0); }
-    });
-    const unitPerPx = 1 / (cam.zoom * (H / 2));
-    const x0 = -lay.width / 2 * unitPerPx;
-    c.font = font(fam, size);
-    c.textBaseline = 'middle';
-    c.textAlign = 'center';
-    c.lineJoin = 'round';
     const fadeOut = 1 - prog(t, tb + 0.12, tb + 0.4, ease.inQuad);
-    const appear = prog(t, this.ctx.start - 0.05, this.ctx.start + 0.12);
     if (fadeOut > 0) {
+      const words = line.words.filter((w) => norm(w.w) !== 'boom');
+      const fam = F.archivo(125, 700), size = Math.round(54 * Math.min(1, cam.zoom / 0.95)), track = 16;
+      const txt = words.map((w) => w.w.toUpperCase()).join(' ');
+      const lay = layout(txt, fam, size, track);
+      const charWord: number[] = [], charIdx: number[] = [];
+      words.forEach((w, wi) => {
+        for (let k = 0; k < w.w.length; k++) { charWord.push(wi); charIdx.push(k); }
+        if (wi < words.length - 1) { charWord.push(-1); charIdx.push(0); }
+      });
+      const unitPerPx = 1 / (cam.zoom * (H / 2));
+      const x0 = -lay.width / 2 * unitPerPx;
+      c.font = font(fam, size);
+      c.textBaseline = 'middle';
+      c.textAlign = 'center';
+      const appear = prog(t, this.ctx.start - 0.05, this.ctx.start + 0.12);
       for (const g of lay.glyphs) {
         const wi = charWord[g.i]!;
         if (wi < 0 || g.ch === ' ') continue;
@@ -208,9 +340,6 @@ export default class Ascent extends Scene {
           if (half < 0) c.rect(-size, -size, size * 2, size); else c.rect(-size, 0, size * 2, size);
           c.clip();
           c.globalAlpha = fadeOut * appear;
-          c.strokeStyle = rgba('ink', 0.9);
-          c.lineWidth = 7;
-          c.strokeText(g.ch, 0, 2);
           c.fillStyle = col;
           c.fillText(g.ch, 0, 2);
           c.restore();
@@ -219,7 +348,7 @@ export default class Ascent extends Scene {
     }
     // ---- "BOOM": the word rides the shockwave rings, repeated around each ring
     const boomW = wordOf(line, 'boom');
-    if (t >= boomW.start) {
+    if (t >= boomW.start && t < boomW.start + 0.8) {
       const bf = F.archivo(125, 900);
       const ctr = this.eyeToPx(0, 0, cam);
       for (let i = 0; i < 3; i++) {
@@ -227,18 +356,108 @@ export default class Ascent extends Scene {
         if (e < 0) continue;
         const Rpx = (0.68 + 0.07 * prog(e, 0, 0.5, ease.outCubic) + (i === 0 ? 0 : e * 1.2)) * cam.zoom * (H / 2);
         const a = (i === 0 ? 1 - prog(e, 0.35, 0.55) : Math.exp(-e / 0.25) * 0.7) * prog(e, 0, 0.03);
-        const sz = 96 * (1 + e * 0.15) * (i === 0 ? 1 + 0.25 * pulse(e, 0, 0.06) : 1);
-        this.textOnArc(c, 'BOOM', ctr.x, ctr.y, Rpx, true, bf, sz, i === 0 ? rgba('bone', a) : rgba('signal', a), i === 0);
+        if (a <= 0.002) continue;
+        const sz = 96 * (1 + e * 0.15) * (i === 0 ? 1 + 0.25 * pulse(e, 0, 0.06) : 1) * (cam.zoom / Math.max(0.3, this.eyeCam(T.pull0).zoom));
+        this.textOnArc(c, 'BOOM', ctr.x, ctr.y, Rpx, true, bf, Math.min(sz, 96 * (1 + e * 0.15) * 1.25), i === 0 ? rgba('bone', a) : rgba('signal', a), i === 0);
       }
     }
+    if (ncam) this.drawNoteText(c, t, ncam, noteA);
     comp.draw(renderer, L.upload(), out);
 
     const sh = t >= tb ? Math.exp(-(t - tb) / 0.12) : 0;
-    const shake: [number, number] = [Math.sin(t * 97) * 30 * sh, Math.cos(t * 83) * 22 * sh];
+    const sd = t >= T.debt ? Math.exp(-(t - T.debt) / 0.08) : 0;
+    const shk = Math.max(sh, 0.5 * sd);
+    const shake: [number, number] = [Math.sin(t * 97) * 30 * shk, Math.cos(t * 83) * 22 * shk];
     return {
-      bloom: 0.75, shake, flash: 0.2 * pulse(t, tb, 0.05), ca: 1.2 + 7 * sh, zoom: 1 + 0.06 * sh,
+      bloom: 0.75, shake, flash: 0.2 * pulse(t, tb, 0.05) + 0.05 * pulse(t, T.debt, 0.04), ca: 1.2 + 7 * sh + 3 * sd, zoom: 1 + 0.06 * sh,
       vignette: 0.45,
     };
+  }
+
+  /** The note's lettering (world-fixed, drawn through the note camera). */
+  drawNoteText(c: CanvasRenderingContext2D, t: number, cam: NCam, alpha: number) {
+    const T = this.T;
+    const z = cam.z;
+    c.save();
+    // world (y up) -> canvas: draw at (x, -y)
+    c.setTransform(z, 0, 0, z, W / 2 - cam.x * z, H / 2 + cam.y * z);
+    c.globalAlpha = alpha;
+    c.textBaseline = 'alphabetic';
+    const bone = (a: number) => rgba('bone', a);
+    const spaced = (s: string, fam: string, size: number, track: number, x: number, y: number, col: string, align: 'left' | 'center' | 'right' = 'left') => {
+      c.font = font(fam, size);
+      c.letterSpacing = `${track}px`;
+      const wd = layout(s, fam, size, track).width;
+      const x0 = align === 'left' ? x : align === 'center' ? x - wd / 2 : x - wd;
+      c.textAlign = 'left';
+      c.fillStyle = col;
+      c.fillText(s, x0, -y);
+      c.letterSpacing = '0px';
+      return wd;
+    };
+    // heading, serials, series
+    spaced('ACAUSAL PROMISSORY NOTE', F.serif(600), 32, 9, 330, 322, bone(0.8), 'center');
+    c.fillStyle = bone(0.5);
+    c.fillRect(330 - 330, -300, 660, 1.2);
+    spaced('Nº 000 000 001 A', F.mono(500), 22, 1, -790, 346, rgba('signal', 0.95));
+    spaced('Nº 000 000 001 A', F.mono(500), 22, 1, -150, -330, rgba('signal', 0.95));
+    spaced(`SERIES P(doom) ${formatPDoom(this.pd.value(t))}`, F.mono(500), 17, 2, OVAL.x, -276, bone(0.55), 'center');
+    spaced('THE BEARER', F.serif(600), 20, 6, OVAL.x, -302, bone(0.45), 'center');
+    // the lyric rows: dim ahead of the voice, signal while sung, bone after
+    for (const r of this.rows) {
+      c.font = font(r.fam, r.size);
+      c.letterSpacing = `${r.track}px`;
+      c.textAlign = 'left';
+      r.words.forEach((w, i) => {
+        const p = Lyrics.wordProgress(w, t);
+        const vis = prog(t, w.start - 0.4, w.start - 0.05);
+        const isDebt = r === this.rows[2] && norm(w.w) === 'debt';
+        const txt = r.caps ? w.w.toUpperCase() : w.w;
+        const col = p > 0 ? (p < 1 || isDebt ? rgba('signal', 1) : bone(0.93)) : bone(0.07 + 0.2 * vis);
+        const x = r.x + r.wx[i]!;
+        if (isDebt && t >= w.start) {
+          const e = t - w.start, s = 1 + 0.16 * Math.exp(-e / 0.05);
+          c.save(); c.translate(x, -r.y); c.scale(s, s);
+          c.fillStyle = col; c.fillText(txt, 0, 0); c.restore();
+        } else { c.fillStyle = col; c.fillText(txt, x, -r.y); }
+      });
+      c.letterSpacing = '0px';
+    }
+    const r2 = this.rows[2]!;
+    c.fillStyle = bone(0.45);
+    c.fillRect(r2.x - 20, r2.y * -1 + 22, r2.width + 40, 1.3);
+    // issue date: not yet
+    const iy = 62;
+    spaced('DATE OF ISSUE', F.serif(600), 19, 5, -150, iy, bone(0.55));
+    const dk = prog(t, T.l18.words[3]!.start, T.l18.words[5]!.end);
+    c.font = font(F.mono(500), 22); c.fillStyle = bone(0.85); c.textAlign = 'left';
+    const dateStr = '__ . __ . 20__   (not yet)';
+    c.fillText(dateStr.slice(0, Math.floor(dateStr.length * dk)), 100, -iy + 1);
+    // terms
+    spaced('PAYABLE TO THE BEARER ON DEMAND · RETROACTIVELY', F.serif(600), 19, 2.2, -150, -176, bone(0.62));
+    c.font = font(F.mono(400), 17); c.textAlign = 'left';
+    c.fillStyle = bone(0.5);
+    c.fillText('Interest compounds backwards from the date of issue.', -150, 212);
+    c.fillText('By reading this note you have accepted its terms.', -150, 238);
+    c.fillStyle = rgba('ash', 0.45);
+    c.fillText('No refunds in this timeline.', -150, 264);
+    // the amount owed: e^n after n beats of "already"
+    const au = this.ctx.audio;
+    const n = t < T.al ? 0 : Math.floor(au.beatAt(t) - au.beatAt(T.al) + 1e-6) + 1;
+    const tn = n === 0 ? -1 : au.timeOfBeat(Math.ceil(au.beatAt(T.al) - 1e-6) + n - 1);
+    const val = Math.exp(n);
+    const pop = n > 0 ? Math.exp(-Math.max(0, t - Math.max(tn, T.al)) / 0.06) : 0;
+    spaced('AMOUNT OWED', F.serif(600), 16, 4, MEDAL.x, MEDAL.y + 52, bone(0.6), 'center');
+    c.save();
+    c.translate(MEDAL.x, -MEDAL.y + 20);
+    c.scale(1 + 0.15 * pop, 1 + 0.15 * pop);
+    c.font = font(F.serif(600), 62); c.textAlign = 'center';
+    c.fillStyle = n > 0 ? (pop > 0.3 ? rgba('signal', 1) : rgba('ember', 0.95)) : bone(0.8);
+    c.fillText(val < 1000 ? val.toFixed(2) : Math.round(val).toLocaleString('en-US'), 0, 0);
+    c.restore();
+    c.font = font(F.mono(400), 15); c.textAlign = 'center'; c.fillStyle = bone(0.5);
+    c.fillText(n > 0 ? `e^${n}  ·  units: you` : 'principal  ·  units: you', MEDAL.x, -MEDAL.y + 52);
+    c.restore();
   }
 
   /** Text along the top (reading clockwise) or bottom (reading counter-clockwise) arc of a circle, upright. */
@@ -248,19 +467,159 @@ export default class Ascent extends Scene {
     c.textAlign = 'center';
     c.textBaseline = top ? 'alphabetic' : 'top';
     const lay = layout(text, fam, size, size * 0.08);
-    const Rt = top ? R : R;
-    const arcLen = lay.width / Rt;
+    const arcLen = lay.width / R;
     for (const g of lay.glyphs) {
-      const s = (g.x + g.w / 2) / Rt - arcLen / 2;
+      const s = (g.x + g.w / 2) / R - arcLen / 2;
       const a = top ? -Math.PI / 2 + s : Math.PI / 2 - s;
       c.save();
-      c.translate(cx + Math.cos(a) * Rt, cy + Math.sin(a) * Rt);
+      c.translate(cx + Math.cos(a) * R, cy + Math.sin(a) * R);
       c.rotate(top ? a + Math.PI / 2 : a - Math.PI / 2);
       if (solid) { c.fillStyle = fill; c.fillText(g.ch, 0, 0); }
       else { c.strokeStyle = fill; c.lineWidth = 2; c.strokeText(g.ch, 0, 0); }
       c.restore();
     }
     c.restore();
+  }
+
+  // ------------------------------------------------------------------ K: the ticket
+  renderK(f: Frame, out: THREE.WebGLRenderTarget): PostOverrides {
+    const { renderer, comp } = this.ctx;
+    const T = this.T, t = f.t, t0 = T.cutK, t1 = T.cutD;
+    const l30 = T.l30;
+    const tR = T.room;
+    clearRT(renderer, out, [LIN.ink[0], LIN.ink[1], LIN.ink[2]]);
+    const L = this.L2; L.clear(); const c = L.ctx;
+    const art = this.tkArt!;
+    // a pool of light on the dark ground
+    const g = c.createRadialGradient(W / 2, H * 0.55, 50, W / 2, H * 0.55, 1100);
+    g.addColorStop(0, rgba('ink2', 1)); g.addColorStop(1, rgba('ink', 1));
+    c.fillStyle = g; c.fillRect(0, 0, W, H);
+    // hero ticket placement (screen), serial position (ticket px)
+    const HX = W / 2, HY = H / 2 + 10, HR = -0.03;
+    const serial = { x: TK.colR - 14, y: 116 };
+    const toScreen = (x: number, y: number) => {
+      const lx = x - TK.w / 2, ly = y - TK.h / 2, cs = Math.cos(HR), sn = Math.sin(HR);
+      return { x: HX + cs * lx - sn * ly, y: HY + sn * lx + cs * ly };
+    };
+    // camera: a slow push, then into the serial after the tear, landing where the odometer's ones drum opens
+    const push = prog(t, tR + 0.16, t1, ease.inCubic);
+    const zc = (1 + 0.035 * prog(t, t0, tR, ease.outQuad)) * Math.pow(3.1, push);
+    const sp = toScreen(serial.x, serial.y);
+    const fx = lerp(W / 2, sp.x, push), fy = lerp(H / 2, sp.y, push);
+    const tx = lerp(W / 2, W / 2 + 190, push), ty = H / 2;
+    const camT = (): void => { c.setTransform(zc, 0, 0, zc, tx - fx * zc, ty - fy * zc); };
+    // three tickets shoot up out of the dark on "Tickets"; the last one is the hero
+    const shots = [
+      { dt: 0.06, x: -70, y: -46, r: -0.14 },
+      { dt: 0.12, x: 80, y: 34, r: 0.09 },
+      { dt: 0.0, x: 0, y: 0, r: 0 },
+    ];
+    // the tear
+    const eT = t - tR;
+    const recoil = eT > 0 ? -14 * Math.exp(-eT / 0.08) * Math.sin(Math.min(eT, 0.2) * 30) : 0;
+    shots.forEach((s, i) => {
+      const e = ease.outExpo(clamp((t - t0 - s.dt) / 0.3));
+      const settle = 0.03 * Math.sin((t - t0 - s.dt) * 26) * Math.exp(-(t - t0 - s.dt) * 8) * (e > 0 ? 1 : 0);
+      if (t < t0 + s.dt) return;
+      camT();
+      c.translate(HX + s.x + (i === 2 ? recoil : 0), HY + s.y + 1000 * (1 - e));
+      c.rotate(HR + s.r + (1 - e) * (i % 2 ? 0.3 : -0.3) + settle);
+      c.translate(-TK.w / 2, -TK.h / 2);
+      const hero = i === 2;
+      c.shadowColor = 'rgba(0,0,0,0.6)'; c.shadowBlur = 40; c.shadowOffsetY = 18;
+      if (!hero || eT <= 0) {
+        c.drawImage(art, 0, 0, TK.w, TK.h);
+      } else {
+        c.drawImage(art, 0, 0, TK.perf * TK_RES, TK.h * TK_RES, 0, 0, TK.perf, TK.h);
+      }
+      c.shadowColor = 'rgba(0,0,0,0)'; c.shadowBlur = 0; c.shadowOffsetY = 0;
+      if (!hero) {
+        c.globalCompositeOperation = 'source-atop';
+        c.fillStyle = rgba('ink', 0.45); c.fillRect(-10, -10, TK.w + 20, TK.h + 20);
+        c.globalCompositeOperation = 'source-over';
+        return;
+      }
+      // the torn stub falls away, pivoting on its lower corner
+      if (eT > 0) {
+        c.save();
+        const fall = 0.5 * 2600 * eT * eT;
+        c.translate(TK.perf + 40 * eT, TK.h + fall);
+        c.rotate(1.1 * ease.outCubic(clamp(eT / 0.5)) + 0.4 * eT);
+        c.translate(0, -TK.h);
+        c.drawImage(art, TK.perf * TK_RES, 0, (TK.w - TK.perf) * TK_RES, TK.h * TK_RES, 0, 0, TK.w - TK.perf, TK.h);
+        c.restore();
+      }
+      this.drawTicketLive(c, t, l30, serial);
+    });
+    comp.draw(renderer, L.upload(), out);
+    const sh = eT > 0 ? Math.exp(-eT / 0.09) : 0;
+    const land = pulse(t, t0 + 0.1, 0.06);
+    return {
+      paper: 0, bloom: 0.55, bloomThreshold: 0.95, vignette: 0.5,
+      shake: [Math.sin(t * 91) * 12 * (sh + land), Math.cos(t * 77) * 9 * (sh + land)],
+      flash: 0.25 * pulse(t, t0, 0.04), ca: 1.0 + 2.5 * sh,
+    };
+  }
+
+  /** The ticket's live lettering: the lyric, the lit slot, the numbering-machine serial (ticket px). */
+  drawTicketLive(c: CanvasRenderingContext2D, t: number, l30: Line, serial: { x: number; y: number }) {
+    const [wT, wTo, wThe, wCh, wRoom] = l30.words as [Word, Word, Word, Word, Word];
+    // TICKETS: hatched banknote capitals, a glyph at a time as it is sung
+    const x0 = TK.colX + 4, y0 = 262;
+    const pT = Lyrics.wordProgress(wT, t);
+    const n = this.tkPaths.length;
+    for (let i = 0; i < n; i++) {
+      const P = this.tkPaths[i]!;
+      const lit = clamp(pT * n - i);
+      c.save();
+      c.translate(x0 + P.x, y0);
+      if (lit <= 0) { c.fillStyle = rgba('ink', 0.1); c.fill(P.p); }
+      else if (pT < 1) { c.fillStyle = rgba('signal', 1); c.fill(P.p); }
+      else {
+        c.save(); c.clip(P.p);
+        c.fillStyle = rgba('ink', 0.92);
+        for (let y = -130; y < 20; y += 5.5) c.fillRect(-10, y, P.w + 20, 2.5);
+        c.restore();
+        c.strokeStyle = rgba('ink', 1); c.lineWidth = 1.8; c.stroke(P.p);
+      }
+      c.restore();
+    }
+    // TO THE / CHINESE ROOM in engraved roman capitals
+    const word = (w: Word, s: string, fam: string, size: number, track: number, x: number, y: number) => {
+      const p = Lyrics.wordProgress(w, t);
+      const vis = prog(t, w.start - 0.4, w.start - 0.05);
+      c.font = font(fam, size); c.letterSpacing = `${track}px`; c.textAlign = 'left';
+      c.fillStyle = p > 0 ? (p < 1 ? rgba('signal', 1) : rgba('ink', 0.92)) : rgba('ink', 0.08 + 0.12 * vis);
+      c.fillText(s, x, y);
+      const wd = layout(s, fam, size, track).width;
+      c.letterSpacing = '0px';
+      return wd;
+    };
+    const sf = F.serif(600);
+    let x = TK.colX + 8;
+    x += word(wTo, 'TO', sf, 40, 8, x, 330) + 22;
+    word(wThe, 'THE', sf, 40, 8, x, 330);
+    const big = 80;
+    x = TK.colX + 6;
+    x += word(wCh, 'CHINESE', sf, big, 5, x, 420) + big * 0.3;
+    word(wRoom, 'ROOM', sf, big, 5, x, 420);
+    // the slot at the end of the aisle lights on "Chinese"
+    if (t >= wCh.start) {
+      const a = prog(t, wCh.start, wCh.start + 0.08);
+      c.fillStyle = rgba('signal', a);
+      c.fillRect(TK.medX - 9, TK.medY - 12, 18, 3);
+    }
+    // numbering-machine serial (red ink), the last digit struck on "room"
+    c.font = font(F.archivo(75, 700), 44);
+    c.textAlign = 'right';
+    c.letterSpacing = '3px';
+    c.fillStyle = rgba('signal', 0.95);
+    const struck = t >= wRoom.start;
+    c.fillText(struck ? 'Nº 000 000 001' : 'Nº 000 000 00', serial.x, serial.y);
+    c.letterSpacing = '0px';
+    if (!struck) {
+      c.fillStyle = rgba('signal', 0.18); c.fillText('1', serial.x, serial.y);
+    }
   }
 
   // ------------------------------------------------------------------ B: the chart becomes a banknote
@@ -501,7 +860,11 @@ export default class Ascent extends Scene {
     const cu = this.comp2.u;
     cu.uSrc!.value = this.rtB.texture;
     (cu.uVel!.value as THREE.Vector2).set(-vx, -vy);
-    cu.uWarp!.value = 0; cu.uSwirl!.value = 0; cu.uDark!.value = 0; cu.uStreak!.value = 0; cu.uCore!.value = 0; cu.uCollapse!.value = 0;
+    // out of hook 3's black: the price line is a lone filament in the dark until "N" lights the paper
+    const sN0 = this.nvSyl()[0]!;
+    const dk = 1 - prog(t, sN0 - 0.06, sN0 + 0.1, ease.inOutCubic);
+    cu.uWarp!.value = 0; cu.uSwirl!.value = 0; cu.uDark!.value = dk; cu.uStreak!.value = 0; cu.uCore!.value = 0.25 * dk; cu.uCollapse!.value = 0;
+    (cu.uP!.value as THREE.Vector2).set(this.w2s(0, hy, cam).x, H - this.w2s(0, hy, cam).y);
     this.comp2.render(renderer, out);
 
     // ---- the spark (additive)
@@ -528,9 +891,6 @@ export default class Ascent extends Scene {
       c.translate(X0 + P.x + P.w / 2, Y0 - 80);
       c.scale(sc, sc);
       c.translate(-P.w / 2, 80);
-      // bone knock-out halo for legibility over the chart
-      c.lineJoin = 'round';
-      c.strokeStyle = rgba('bone', 0.95); c.lineWidth = 12; c.stroke(P.p);
       if (hot) { c.fillStyle = rgba('signal', 1); c.fill(P.p); }
       else {
         c.fillStyle = rgba('bone', 1); c.fill(P.p);
@@ -555,7 +915,6 @@ export default class Ascent extends Scene {
       c.letterSpacing = '12px';
       const ww = c.measureText(txt).width;
       if (vis > 0) {
-        c.lineWidth = 8; c.strokeStyle = rgba('bone', 0.9 * vis); c.strokeText(txt, x, Y0 + 96);
         c.fillStyle = p > 0 ? (p < 1 ? rgba('signal', 1) : rgba('ink', 0.95)) : rgba('ink', 0.25 * vis);
         c.fillText(txt, x, Y0 + 96);
       }
@@ -585,13 +944,13 @@ export default class Ascent extends Scene {
     let punch = 0;
     for (const ts of syl) punch = Math.max(punch, t >= ts ? Math.exp(-(t - ts) / 0.09) : 0);
     const sh = Math.max(impact * impact, 0.35 * punch);
-    return { paper: 1, bloom: 0.6, bloomThreshold: 0.95, vignette: 0.3, zoom: 1 + 0.025 * punch, shake: [Math.sin(t * 91) * 14 * sh, Math.cos(t * 77) * 10 * sh], flash: 0.18 * pulse(t, T.moon, 0.04) + 0.3 * pulse(t, T.cutB, 0.04), ca: 1.0 + 3 * sh };
+    return { paper: 1 - dk, bloom: 0.6, bloomThreshold: 0.95, vignette: 0.3, zoom: 1 + 0.025 * punch, shake: [Math.sin(t * 91) * 14 * sh, Math.cos(t * 77) * 10 * sh], flash: 0.18 * pulse(t, T.moon, 0.04) + 0.22 * pulse(t, sN0, 0.04), ca: 1.0 + 3 * sh };
   }
 
   // ------------------------------------------------------------------ C: the Omega Point
   renderC(f: Frame, out: THREE.WebGLRenderTarget): PostOverrides {
     const { renderer, comp } = this.ctx;
-    const T = this.T, t = f.t, t0 = T.omega, t1 = T.cutD;
+    const T = this.T, t = f.t, t0 = T.omega, t1 = T.cutK;
     const l3 = T.l3;
     const omegaW = wordOf(l3, 'omega');
     // the note keeps drifting while the camera centres the moon

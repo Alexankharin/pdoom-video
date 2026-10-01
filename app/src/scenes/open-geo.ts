@@ -260,3 +260,53 @@ export function centroid(ps: P[]): P {
   for (const p of ps) { x += p.x; y += p.y; }
   return { x: x / ps.length, y: y / ps.length };
 }
+
+// ------------------------------------------------------------------ verse 1 additions
+/**
+ * The TikZ heart: a square stood on its corner with a semicircle on each upper side.
+ * `open` < 1 leaves the last side short of the cusp (the path is never closed with `-- cycle`).
+ * Starts at the cusp (cx, cy - 0.78a), goes up the left side, over both lobes, down the right.
+ */
+export function heart(cx: number, cy: number, a: number, open = 1): P[] {
+  const r2 = Math.SQRT2;
+  const B = pt(cx, cy - 0.78 * a);
+  const Lv = pt(B.x - a / r2, B.y + a / r2), Rv = pt(B.x + a / r2, B.y + a / r2);
+  const m1 = pt(B.x - a / (2 * r2), B.y + (3 * a) / (2 * r2)), m2 = pt(B.x + a / (2 * r2), B.y + (3 * a) / (2 * r2));
+  const deg = Math.PI / 180;
+  const out: P[] = [B, Lv];
+  out.push(...arc(m1.x, m1.y, a / 2, 225 * deg, 45 * deg, 32).slice(1));
+  out.push(...arc(m2.x, m2.y, a / 2, 135 * deg, -45 * deg, 32).slice(1));
+  out.push(pt(lerp(Rv.x, B.x, open), lerp(Rv.y, B.y, open)));
+  return out;
+}
+
+export type Mutation = 'base' | 'five' | 'hornTail' | 'legsUp' | 'noHorn' | 'giraffe' | 'twoHeads';
+
+/**
+ * A sampled "answer" for the preference pairs: the unicorn `r` of the way from checkpoint 1
+ * (crude primitives) to checkpoint 3 (refined), with one of the usual failure modes.
+ * Degenerate parts (the absent fifth leg) are dropped.
+ */
+export function sample(m: Mutation, r: number): Part[] {
+  const a = unicorn(1), b = unicorn(3);
+  let parts: Part[] = a.map((p, i) => ({ id: p.id, closed: p.closed, pts: mix(p.pts, b[i]!.pts, r) }));
+  const map = (ids: (id: string) => boolean, f: (p: P) => P) => { parts = parts.map((p) => (ids(p.id) ? { ...p, pts: p.pts.map(f) } : p)); };
+  const head = (id: string) => id === 'neck' || id === 'head' || id === 'ear' || id === 'horn' || id.startsWith('mane');
+  if (m === 'five') {
+    const l4 = unicorn(2).find((p) => p.id === 'leg4')!;
+    parts = parts.map((p) => (p.id === 'leg4' ? { ...p, pts: l4.pts } : p));
+  }
+  if (m === 'hornTail') map((id) => id === 'horn', (p) => pt(-p.x + 1.1, p.y - 1.7));
+  if (m === 'legsUp') map((id) => id.startsWith('leg'), (p) => pt(p.x, -p.y));
+  if (m === 'noHorn') parts = parts.filter((p) => p.id !== 'horn');
+  if (m === 'giraffe') map((id) => head(id), (p) => pt(p.x + 0.12 * clamp((p.y - 0.5) / 0.9), p.y + 0.75 * clamp((p.y - 0.5) / 0.9)));
+  if (m === 'twoHeads') {
+    const mirrored = parts.filter((p) => head(p.id)).map((p) => ({ id: `${p.id}'`, closed: p.closed, pts: p.pts.map((q) => pt(-q.x, q.y)) }));
+    parts = [...parts.filter((p) => !p.id.startsWith('tail')), ...mirrored];
+  }
+  return parts.filter((p) => {
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (const q of p.pts) { x0 = Math.min(x0, q.x); x1 = Math.max(x1, q.x); y0 = Math.min(y0, q.y); y1 = Math.max(y1, q.y); }
+    return x1 - x0 > 0.01 || y1 - y0 > 0.01;
+  });
+}

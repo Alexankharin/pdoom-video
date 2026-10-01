@@ -1,16 +1,20 @@
-// FIG. 13 — "Loom (branching)" (final chorus, the loudest part of the song).
-//  1 "Just as foretold by Loom": one shot of the Loom tree. Hook 4's thread and spark become the root:
-//    the line is generated token by token along the chosen path (the spark writes each word as it is
-//    sung), while at every node the continuations not taken sprout above and below with their
-//    probabilities and keep branching into the dark. The camera rides the tip, then pulls back in beat
-//    steps until the whole multiverse is in frame; the final token is sampled from its candidates and
-//    "Loom" lands last, in Cormorant italic.
-//  2 "From masked pre-training days": a pre-training page, tokens masked and unmasked on every beat;
-//    the lyric sits in big [MASK] blocks that unmask as each word is sung.
-//  3 "To recursive self-upgrade": the plate nests inside itself (log-polar Droste over our own frame),
-//    twists into a spiral, then untwists and dives level by level (each frame one version newer)
-//    until it bottoms out in one frame that is not a plate: a screen seen from behind in a dark room,
-//    FIG. 14's first shot, rendered live — the dive lands exactly on the cut.
+// FIG. 13 — "Loom". One module, two parts (params.part), each played twice (params.take 1 | 2; the
+// second pass reads the second occurrence of its lines, params.nth = 1):
+//  part 'tree' — "Just as foretold by Loom": one shot of the Loom tree. The hook's thread and spark become
+//    the root: the line is generated token by token along the chosen path (the spark writes each word as
+//    it is sung), while at every node the continuations not taken sprout with their probabilities and
+//    keep branching into the dark. The camera rides the tip, then pulls back in beat steps until the
+//    whole multiverse is in frame; the final token is sampled from its candidates (a dim ghost of it
+//    waits in its slot) and "Loom" lands last, in Cormorant italic. Take 2: the same distribution, a
+//    second draw (the tree mirrored, its futures re-sampled, a pointer running down the candidates).
+//  part 'mask' — "From masked pre-training days": a pre-training page, tokens masked and unmasked on
+//    every beat; the lyric sits in big [MASK] blocks that unmask as each word is sung. "To recursive
+//    self-upgrade": the plate nests inside itself (log-polar Droste over our own frame), twists into a
+//    spiral, then untwists and dives level by level (each frame one version newer) until it bottoms out
+//    in one frame that is not a plate: FIG. 14's first shot, rendered live — the dive lands on the cut.
+//    Take 2 (epoch 2): bone paper, the layout flush right, every mask filled with p = 0.99
+//    ("memorised"), the spiral twisting the other way, the versions carrying on from v6.0, and the
+//    bottom frame FIG. 14's take 2.
 import * as THREE from 'three';
 import { Scene, type Frame } from '../engine/scene';
 import { FSPass, Layer2D, W, H, SCALE, SS_TAP, makeRT, scaleContext2D } from '../engine/gl';
@@ -45,7 +49,7 @@ const CORPUS = [
 export default class Loom extends Scene {
   droste = new FSPass(FRAG_DROSTE, {
     res: { value: new THREE.Vector2(W * SCALE, H * SCALE) }, time: { value: 0 }, ssTap: SS_TAP, // res physical: supersample offsets and texture footprints
-    src: { value: null }, s: { value: 3 }, zoom: { value: 0 }, twist: { value: 0 }, spin: { value: 0 },
+    src: { value: null }, s: { value: 3 }, zoom: { value: 0 }, twist: { value: 0 }, spin: { value: 0 }, twDir: { value: 1 },
     term: { value: null }, termLevel: { value: TERM_LEVEL },
     atlas: { value: null }, atlasRows: { value: ATLAS_ROWS }, labelRect: { value: new THREE.Vector4() },
   });
@@ -59,32 +63,49 @@ export default class Loom extends Scene {
   page!: HTMLCanvasElement;
   tokens: { x: number; y: number; w: number }[] = [];
   L1!: Line; L2!: Line; L3!: Line;
+  part: 'tree' | 'mask' = 'mask';
+  take = 1;
+  /** take 2 of the mask part: bone paper, ink type */
+  paper = false;
   pdoom!: PDoom;
   tree!: LoomTree;
   room!: IlyaRoom;
   roomRT = makeRT(W, H, { depthBuffer: false });
-  T!: { start: number; end: number; s2: number; s3: number; twist: number; untwist: number; beats: number[]; b1: number; b2: number; b3: number };
+  T!: { start: number; end: number; s3: number; snap: number; twist: number; untwist: number; b1: number; b2: number; b3: number };
   context = '…I’m upping my P(doom)'; // the lyric it continues (display punctuation, like the ellipsis)
 
   override init() {
-    const { lyrics: ly, audio: au, start, end } = this.ctx;
-    this.L1 = ly.get('foretold by Loom');
-    this.L2 = ly.get('masked pre-training');
-    this.L3 = ly.get('recursive self-upgrade');
+    const { lyrics: ly, audio: au, start, end, params } = this.ctx;
+    this.part = params.part === 'tree' ? 'tree' : 'mask';
+    const nth = (params.nth as number) ?? 0;
+    this.take = (params.take as number) ?? 1;
     this.pdoom = new PDoom(ly);
     const b0 = Math.ceil(au.beatAt(start) - 0.01);
     const beats: number[] = [];
     for (let b = b0; au.timeOfBeat(b) < end + 0.01; b++) beats.push(au.timeOfBeat(b));
+    const inWin = beats.filter((b) => b > start + 0.1 && b < end - 0.1);
+    this.T = {
+      start, end, s3: end, snap: end, twist: end, untwist: end,
+      b1: inWin[0] ?? start + 0.45, b2: inWin[1] ?? start + 0.9, b3: inWin[2] ?? start + 1.36,
+    };
+    if (this.part === 'tree') {
+      this.L1 = ly.get('foretold by Loom', nth);
+      // the final candidates show on the beat before "Loom" at the latest (the first pass has 1.7 s)
+      this.tree = new LoomTree(this.L1.words, { take: this.take, tSampleMax: this.T.b3 });
+      return;
+    }
+    this.paper = this.take === 2;
+    this.L2 = ly.get('masked pre-training', nth);
+    this.L3 = ly.get('recursive self-upgrade', nth);
     // cuts on the beats nearest the line starts
-    const s2 = au.nearestBeat(this.L2.start), s3 = au.nearestBeat(this.L3.start);
-    const inTree = beats.filter((b) => b > start + 0.1 && b < s2 - 0.1);
+    const s3 = au.nearestBeat(this.L3.start);
     const self = this.L3.words[this.L3.words.length - 1]!;
     const twist = Math.min(au.nearestBeat(self.start), end - 0.9);
-    this.T = {
-      start, end, s2, s3, twist, untwist: au.timeOfBeat(Math.round(au.beatAt(twist)) + 1), beats,
-      b1: inTree[0] ?? start + 0.45, b2: inTree[1] ?? start + 0.9, b3: inTree[2] ?? start + 1.36,
-    };
-    this.tree = new LoomTree(this.L1.words);
+    Object.assign(this.T, {
+      s3, twist, untwist: au.timeOfBeat(Math.round(au.beatAt(twist)) + 1),
+      // the reframe onto the second row lands on the beat nearest its first word
+      snap: au.nearestBeat(this.L2.words[Math.min(2, this.L2.words.length - 1)]!.start),
+    });
     this.buildPage();
     this.plateCanvas.width = W * SCALE; this.plateCanvas.height = H * SCALE;
     this.plateCtx = scaleContext2D(this.plateCanvas.getContext('2d')!, SCALE);
@@ -95,9 +116,11 @@ export default class Loom extends Scene {
     this.plateTex.magFilter = THREE.LinearFilter;
     this.plateTex.anisotropy = 8;
     this.buildAtlas();
-    // FIG. 14's world, for the bottom of the recursion (its window starts where ours ends)
-    const outro = au.sections.find((x) => x.name === 'outro')?.start ?? end + 8.6;
-    this.room = new IlyaRoom(ly, au, end, outro);
+    // FIG. 14's world (same pass), for the bottom of the recursion: its window starts where ours ends and
+    // runs to the cut before "Just transformers"
+    const tr = ly.get('transformers all the way', nth).words[0]!.start;
+    const ilyaEnd = au.timeOfBeat(Math.floor(au.beatAt(tr + 0.02)));
+    this.room = new IlyaRoom(ly, au, end, ilyaEnd, nth, this.take);
   }
 
   /** Version tags for the Droste levels: v1.0 · 7B … each nested frame one upgrade (and 10x) bigger. */
@@ -110,7 +133,7 @@ export default class Loom extends Scene {
     const units = ['M', 'B', 'T', 'Q', 'Qi', 'Sx', 'Sp', 'Oc'];
     for (let i = 0; i < ATLAS_ROWS; i++) {
       const y = i * rh;
-      const e = i + 9; // 7 × 10^9 at v1
+      const e = i + 9 + (this.take - 1) * TERM_LEVEL; // 7 × 10^9 at v1
       const u = units[Math.min(units.length - 1, Math.floor(e / 3) - 2)]!;
       const mant = 7 * Math.pow(10, e % 3);
       c.fillStyle = rgba('ink', 0.92);
@@ -118,10 +141,11 @@ export default class Loom extends Scene {
       c.font = font(F.mono(600), 30 * sc * 0.72);
       c.fillStyle = rgba('signal');
       c.textBaseline = 'middle';
-      c.fillText(`SELF v${i + 1}.0`, 14 * sc, y + rh / 2);
+      const v = i + 1 + (this.take - 1) * TERM_LEVEL; // take 2 carries on where take 1 bottomed out
+      c.fillText(`SELF v${v}.0`, 14 * sc, y + rh / 2);
       c.font = font(F.mono(400), 30 * sc * 0.6);
       c.fillStyle = rgba('bone', 0.9);
-      c.fillText(`${mant}${u} params · rev. ${String(i + 1).padStart(3, '0')}`, 190 * sc, y + rh / 2);
+      c.fillText(`${mant}${u} params · rev. ${String(v).padStart(3, '0')}`, 190 * sc, y + rh / 2);
     }
     this.atlasTex = new THREE.CanvasTexture(cv);
     this.atlasTex.colorSpace = THREE.SRGBColorSpace;
@@ -139,8 +163,8 @@ export default class Loom extends Scene {
     const size = 17, lh = 27;
     c.font = font(F.mono(400), size);
     c.textBaseline = 'alphabetic';
-    c.fillStyle = rgba('graphite', 0.62);
-    const rnd = mulberry32(13);
+    c.fillStyle = this.paper ? rgba('graphite', 0.8) : rgba('graphite', 0.62);
+    const rnd = mulberry32(13 + 101 * (this.take - 1)); // take 2: another shuffle of the corpus
     let x = 40, y = 34;
     const sp = c.measureText(' ').width;
     while (y < H + lh) {
@@ -164,7 +188,7 @@ export default class Loom extends Scene {
     this.lines.clear();
     this.layer.clear();
     let post: Record<string, any> = { bloom: 0.8 };
-    if (t < T.s2) post = { ...post, ...this.renderTree(f, out) };
+    if (this.part === 'tree') post = { ...post, ...this.renderTree(f, out) };
     else if (t < T.s3) post = { ...post, ...this.renderMask(f, out) };
     else post = { ...post, ...this.renderDroste(f, out) };
     return post;
@@ -186,9 +210,18 @@ export default class Loom extends Scene {
     const wx0 = b.x0 - 150, wx1 = b.x1 + 60, wy0 = b.y0 - 20, wy1 = b.y1 + 20;
     const zW = Math.min((W * 0.94) / (wx1 - wx0), (H * 0.92) / (wy1 - wy0));
     const k = prog(t, T.b2 - 0.02, T.b2 + 0.42, ease.inOutCubic);
-    const settle = 1 + 0.035 * prog(t, T.b3 - 0.02, T.b3 + 0.3, ease.outExpo) + 0.012 * prog(t, T.b3 + 0.3, T.s2);
-    const z = lerp(zf, zW, k) * settle;
-    const cx = lerp(fx, (wx0 + wx1) / 2, k), cy = lerp(fy, (wy0 + wy1) / 2, k);
+    const settle = 1 + 0.035 * prog(t, T.b3 - 0.02, T.b3 + 0.3, ease.outExpo) + 0.012 * prog(t, T.b3 + 0.3, T.end);
+    let z = lerp(zf, zW, k) * settle;
+    let cx = lerp(fx, (wx0 + wx1) / 2, k), cy = lerp(fy, (wy0 + wy1) / 2, k);
+    if (this.take === 2) {
+      // the second draw has a bar to spare: after "Loom" the camera leans in on the token it drew again
+      const loom = tr.words[tr.words.length - 1]!;
+      const nl = tr.words.length - 1;
+      const lk = prog(t, loom.end - 0.1, T.end, ease.inOutCubic);
+      const lx = tr.tokX[nl]! + tr.tokW[nl]! * 0.5, ly = Y0 - 60;
+      z *= 1 + 0.55 * lk;
+      cx = lerp(cx, lx, lk * 0.8); cy = lerp(cy, ly, lk * 0.8);
+    }
     return { cx, cy, z };
   }
 
@@ -283,19 +316,20 @@ export default class Loom extends Scene {
     const T = this.T;
     const t = f.t;
     const c = this.layer.ctx;
-    this.layer.clear(rgba('ink'));
-    // push in, then a snap reframing onto the second row on the downbeat
-    const db = this.ctx.audio.downbeats.find((d) => d > T.s2 + 0.3 && d < T.s3) ?? (T.s2 + T.s3) / 2;
+    this.layer.clear(rgba(this.paper ? 'bone' : 'ink'));
+    // push in, then a snap reframing onto the second row on its beat (mirrored in take 2)
+    const db = T.snap;
     const snap = prog(t, db - 0.03, db + 0.2, ease.outExpo);
-    const zoom = lerp(1.0, 1.03, prog(t, T.s2, db)) * lerp(1, 1.06, snap) + 0.015 * f.a.kick;
-    const fy = lerp(H / 2, 610, snap), fx = lerp(W / 2, 880, snap);
+    const zoom = lerp(1.0, 1.03, prog(t, T.start, db)) * lerp(1, 1.06, snap) + 0.015 * f.a.kick;
+    const fy = lerp(H / 2, 610, snap), fx = lerp(W / 2, this.paper ? W - 880 : 880, snap);
     c.save();
     c.translate(W / 2, H / 2); c.scale(zoom, zoom); c.translate(-fx, -fy);
-    c.rotate(lerp(0, -0.012, snap));
+    c.rotate(lerp(0, this.paper ? 0.012 : -0.012, snap));
     this.drawPlate(c, t, false);
     c.restore();
     comp.draw(renderer, this.layer.upload(), out, { mode: 'replace' });
-    return {};
+    // bone paper must stay crisp (no bloom on the page)
+    return this.paper ? { bloomThreshold: 1.0, vignette: 0.3 } : {};
   }
 
   /** The [MASK] plate: page of tokens with masks flickering per beat + the sung line in big blocks. */
@@ -311,8 +345,8 @@ export default class Loom extends Scene {
     const kick = au.hit('kick', t, 0.1);
     for (let i = 0; i < this.tokens.length; i++) {
       const tk = this.tokens[i]!;
-      if (hash(i, beat, 5) < 0.15) {
-        c.fillStyle = rgba('ash', 0.42 + 0.4 * kick * hash(i, 9));
+      if (hash(i, beat, 5 + this.take) < 0.15) {
+        c.fillStyle = this.paper ? rgba('ink', 0.55 + 0.3 * kick * hash(i, 9)) : rgba('ash', 0.42 + 0.4 * kick * hash(i, 9));
         let y = tk.y - scroll;
         if (y < -20) y += H;
         c.fillRect(tk.x - 2, y - 14, tk.w + 4, 18);
@@ -324,9 +358,11 @@ export default class Loom extends Scene {
   /** The sung line as [MASK] blocks that unmask per word (on the page, or crisp over the Droste). */
   private drawMaskLine(c: CanvasRenderingContext2D, t: number, forDroste: boolean) {
     const line = forDroste ? this.L3 : this.L2;
-    // scrim so the big words read over the page
-    const g = c.createLinearGradient(0, 0, W, 0);
-    g.addColorStop(0, rgba('ink', 0.92)); g.addColorStop(0.75, rgba('ink', 0.75)); g.addColorStop(1, rgba('ink', 0.35));
+    const pp = this.paper;
+    const ground = pp ? 'bone' : 'ink', type = pp ? 'ink' : 'bone';
+    // scrim so the big words read over the page (heavier on the side the lines are set from)
+    const g = c.createLinearGradient(pp ? W : 0, 0, pp ? 0 : W, 0);
+    g.addColorStop(0, rgba(ground, 0.92)); g.addColorStop(0.75, rgba(ground, 0.75)); g.addColorStop(1, rgba(ground, 0.35));
     c.fillStyle = g;
     if (!forDroste) c.fillRect(0, 300, W, 400);
     else { c.fillRect(0, H - 330, W, 250); }
@@ -338,8 +374,19 @@ export default class Loom extends Scene {
     const widest = Math.max(...(forDroste ? [line.words] : [line.words.slice(0, 2), line.words.slice(2)]).map((ws) => rowW(ws, size)));
     size *= Math.min(1, (W - 240) / widest);
     const baseY = forDroste ? [H - 145] : [480, 650];
+    if (pp && !forDroste) {
+      // epoch 2: the same page again
+      c.font = font(F.mono(500), 15);
+      c.letterSpacing = '3px';
+      c.textAlign = 'right';
+      c.fillStyle = rgba('graphite', 0.95);
+      c.fillText('EPOCH 2 · SAMPLE 2 OF 2', W - 120, 336);
+      c.textAlign = 'left';
+      c.letterSpacing = '0px';
+    }
     rows.forEach((ws, ri) => {
-      let x = 120;
+      // take 2 is set flush right
+      let x = pp ? W - 120 - rowW(ws, size) + 24 : 120;
       const y = baseY[ri]!;
       for (const w of ws) {
         const txt = w.w.toUpperCase();
@@ -348,19 +395,19 @@ export default class Loom extends Scene {
         const p = Lyrics.wordProgress(w, t);
         const bx = x - 12, by = y - size * 0.78, bw = tw + 24, bh = size * 0.86;
         // revealed word underneath
-        c.fillStyle = p <= 0 ? rgba('bone', 0) : p < 1 ? rgba('signal') : rgba('bone', 0.97);
+        c.fillStyle = p <= 0 ? rgba(type, 0) : p < 1 ? rgba('signal') : rgba(type, 0.97);
         c.fillText(txt, x, y);
         // the block, wiped away left → right as the word is sung
         const cover = 1 - p;
         if (cover > 0) {
           const cx = bx + bw * (1 - cover);
-          c.fillStyle = rgba('bone', 0.9);
+          c.fillStyle = rgba(type, pp ? 0.94 : 0.9);
           c.fillRect(cx, by, bw * cover, bh);
           c.save();
           c.beginPath(); c.rect(cx, by, bw * cover, bh); c.clip();
           c.font = font(F.mono(500), size * 0.34);
           c.textAlign = 'center';
-          c.fillStyle = rgba('ink', 0.88);
+          c.fillStyle = rgba(ground, 0.88);
           c.fillText('[MASK]', bx + bw / 2, by + bh * 0.64);
           c.textAlign = 'left';
           c.restore();
@@ -373,8 +420,10 @@ export default class Loom extends Scene {
         const nextW = line.words[w.index + 1];
         if (p > 0 && (!nextW || t < nextW.start || ri < rows.length - 1 && ws.indexOf(w) === ws.length - 1)) {
           c.font = font(F.mono(400), 16);
-          c.fillStyle = rgba('ash', 0.9);
-          c.fillText(`[MASK] → ${plain(w.w.toLowerCase())}  p=${(0.62 + 0.37 * hash(w.gi, 2)).toFixed(2)}`, x, by - 10);
+          c.fillStyle = pp ? rgba('graphite', 1) : rgba('ash', 0.9);
+          // epoch 2: it has seen this line before
+          const ann = pp ? `[MASK] → ${plain(w.w.toLowerCase())}  p=0.99 (memorised)` : `[MASK] → ${plain(w.w.toLowerCase())}  p=${(0.62 + 0.37 * hash(w.gi, 2)).toFixed(2)}`;
+          c.fillText(ann, x, by - 10);
         }
         x += tw + size * 0.3;
       }
@@ -390,11 +439,12 @@ export default class Loom extends Scene {
     // source plate: the [MASK] page, a frame border, the new line and a version tag
     const pc = this.plateCtx;
     pc.setTransform(1, 0, 0, 1, 0, 0);
-    pc.fillStyle = rgba('ink'); pc.fillRect(0, 0, W, H);
+    const pp = this.paper;
+    pc.fillStyle = rgba(pp ? 'bone' : 'ink'); pc.fillRect(0, 0, W, H);
     this.drawPlate(pc, t, true);
-    pc.strokeStyle = rgba('bone', 0.8); pc.lineWidth = 6;
+    pc.strokeStyle = rgba(pp ? 'ink' : 'bone', 0.8); pc.lineWidth = 6;
     pc.strokeRect(22, 22, W - 44, H - 44);
-    pc.strokeStyle = rgba('bone', 0.35); pc.lineWidth = 2;
+    pc.strokeStyle = rgba(pp ? 'ink' : 'bone', 0.35); pc.lineWidth = 2;
     pc.strokeRect(40, 40, W - 80, H - 80);
     // every nested plate carries its own instrument: P(doom), all the way down
     pc.fillStyle = rgba('ink', 0.9);
@@ -423,23 +473,27 @@ export default class Loom extends Scene {
     u.zoom!.value = zoom;
     u.twist!.value = prog(t, T.twist - 0.05, T.twist + 0.05, ease.inOutCubic) * (1 - prog(t, T.untwist - 0.04, T.untwist + 0.14, ease.inOutCubic));
     u.spin!.value = 0;
+    u.twDir!.value = pp ? -1 : 1; // take 2 spirals the other way
     this.droste.render(renderer, out);
     // the line itself stays put and crisp over the dive (the nested copies echo it at every scale)
     const L = this.layer, c = L.ctx;
     L.clear();
-    const hold = prog(t, T.s3, T.s3 + 0.25) * (1 - prog(t, T.end - 0.4, T.end - 0.1));
+    // (the bone scrim of take 2 has to be gone before the dark room fills the frame)
+    const fo = pp ? 0.25 : 0;
+    const hold = prog(t, T.s3, T.s3 + 0.25) * (1 - prog(t, T.end - 0.4 - fo, T.end - 0.1 - fo));
     const g = c.createLinearGradient(0, H - 380, 0, H);
-    g.addColorStop(0, rgba('ink', 0)); g.addColorStop(0.45, rgba('ink', 0.88 * hold)); g.addColorStop(1, rgba('ink', 0.94 * hold));
+    const gr = pp ? 'bone' : 'ink';
+    g.addColorStop(0, rgba(gr, 0)); g.addColorStop(0.45, rgba(gr, 0.88 * hold)); g.addColorStop(1, rgba(gr, 0.94 * hold));
     c.fillStyle = g;
     c.fillRect(0, H - 380, W, 380);
     c.save();
-    c.globalAlpha = 1 - prog(t, T.end - 0.22, T.end - 0.06);
+    c.globalAlpha = 1 - prog(t, T.end - 0.22 - fo, T.end - 0.06 - fo);
     this.drawMaskLine(c, t, true);
     c.restore();
     this.ctx.comp.draw(renderer, L.upload(), out);
     const kick = f.a.kick;
     const tw = Math.exp(-Math.abs(t - T.twist) / 0.05);
-    return { zoom: 1 + 0.012 * kick * (1 - dive), ca: 0.5, flash: 0.12 * tw, bloomThreshold: lerp(0.85, 0.9, dive) };
+    return { zoom: 1 + 0.012 * kick * (1 - dive), ca: 0.5, flash: (pp ? 0.06 : 0.12) * tw, bloomThreshold: pp ? lerp(1.0, 0.9, dive) : lerp(0.85, 0.9, dive) };
   }
 }
 void clamp; void smoothstep;

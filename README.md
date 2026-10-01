@@ -4,7 +4,7 @@ A generative, code-rendered music video with word-synced karaoke typography. Eve
 
 **Watch it in 4K on YouTube:** https://www.youtube.com/watch?v=5EoO5413dBY
 
-The YouTube upload is an earlier render: it averages only 4 sub-frames per frame for motion blur, so fast motion shows stepped copies, and YouTube's compression smears the film grain. For the best version, render it locally (see [Render the video](#render-the-video)): the current code picks up to 324 sub-frames per frame where the motion needs them.
+The YouTube upload is an earlier render of the earlier, 2:37 version of the song (the edit has since been re-cut for the 4:53 house version, see Credits). It also averages only 4 sub-frames per frame for motion blur, so fast motion shows stepped copies, and YouTube's compression smears the film grain. For the best version, render it locally (see [Render the video](#render-the-video)): the current code picks up to 324 sub-frames per frame where the motion needs them.
 
 The video was made with Claude (Opus 5.5) in Claude Code: the concept and treatment, the lyric alignment and audio analysis, the renderer, every scene and the renders were all worked out in conversation with Claude.
 
@@ -14,11 +14,12 @@ The concept, style bible and plate-by-plate treatment are in [`docs/TREATMENT.md
 
 ## Layout
 
-- `audio/pdoom.mp3` — the song (the Claude-Pop version, see Credits).
-- `lyrics/lyrics.src.js` — the original line-level lyrics (approximate timings).
+- `audio/pdoom.mp3` — the song (the 4:53 house version, see Credits).
+- `lyrics.txt` — its lyrics as written; the bridge, the "Just transformers" verse and the final chorus are sung twice.
+- `lyrics/lyrics.src.js` — the sung lines in order (89, repeats included) with line-level timings; the input of the alignment.
 - `analysis/` — Python (uv) tools that produced the timing data: Demucs stem separation, CTC forced alignment cross-checked with Whisper, beat/downbeat/onset analysis. See `analysis/align.py` and `analysis/analyze.py`.
 - `data/lyrics.json` — word-level (and some syllable-level) lyric timings.
-- `data/audio.json` — tempo (132.007 BPM), beats, downbeats, sections, drum/vocal onsets and loudness envelopes.
+- `data/audio.json` — beats on the song's tempo curve (it accelerates from about 132 to 140.6 BPM), downbeats, sections, drum/vocal onsets and loudness envelopes.
 - `app/` — the renderer: TypeScript + three.js, bun + Vite.
   - `src/engine/` — renderer core: timeline playback, post-processing (bloom, halation, grain), typography (Archivo, IBM Plex Mono, Cormorant Garamond, single-stroke plotter fonts), GPU line batches, HUD.
   - `src/scenes/` — one module per plate (`open`, `loss`, `prompt`, `hook`, `room`, `shoggoth`, `spacetime`, `ascent`, `bureau`, `leftturn`, `paperclips`, `fuse`, `stack`, `dense`, `loom`, `ilya`, `outro`) plus shared motifs.
@@ -78,7 +79,7 @@ bun scripts/render.ts video --scale 2 --samples auto --shutter 0.2 --x264 aq-mod
 
 The committed `data/*.json` files are all the renderer needs. Regenerating them needs the stems and intermediates, which are not in the repo:
 
-- **Stems:** Demucs `htdemucs_ft` into `analysis/stems/htdemucs_ft/pdoom/` (`uv run python -m demucs -n htdemucs_ft -o stems ../audio/pdoom.mp3`), plus the lead vocal from a mel-band-roformer karaoke model (audio-separator) in `analysis/stems/karaoke/lead.wav`.
+- **Stems:** Demucs `htdemucs_ft` into `analysis/stems/htdemucs_ft/pdoom/`, run on a gapless WAV decode so the stems need no time shift (`ffmpeg -i ../audio/pdoom.mp3 -ar 44100 work/pdoom.wav`, then `uv run python -m demucs -n htdemucs_ft -o stems --filename "pdoom/{stem}.{ext}" work/pdoom.wav`), plus the lead vocal from the `mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956` karaoke model (`uv run audio-separator ../audio/pdoom.mp3 -m mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt --output_dir stems/karaoke`, its vocals output renamed to `lead.wav`).
 - **Intermediates:** `ctc_emissions.py`, `whisper_run.py` and `vocal_feats.py` write them to `analysis/work/`. The pipeline is described at the top of `analysis/align.py`.
 
 ```sh
@@ -91,7 +92,7 @@ The models download about 4 GB of weights into `analysis/.cache/`; delete that f
 
 ## Credits
 
-- **Song:** "I'm Upping My P(doom)". The lyrics are by [osmarks](https://docs.osmarks.net/hypha/p%28doom%29_song_objectively_correct_interpretation), built on an opening verse and chorus by [MusicPerson](https://www.udio.com/creators/MusicPerson), with lines suggested on the EleutherAI Discord and help from Claude on the outro and final chorus. The original was generated with Udio and released in November 2024 ([YouTube](https://www.youtube.com/watch?v=uEB5E67vcPA)). This video uses the "Claude-Pop" version made with Suno, posted by [deckard (@slimer48484)](https://x.com/slimer48484/status/2097752569212756134) in September 2026.
+- **Song:** "I'm Upping My P(doom)". The lyrics are by [osmarks](https://docs.osmarks.net/hypha/p%28doom%29_song_objectively_correct_interpretation), built on an opening verse and chorus by [MusicPerson](https://www.udio.com/creators/MusicPerson), with lines suggested on the EleutherAI Discord and help from Claude on the outro and final chorus. The original was generated with Udio and released in November 2024 ([YouTube](https://www.youtube.com/watch?v=uEB5E67vcPA)). The first cut of this video used the "Claude-Pop" version made with Suno, posted by [deckard (@slimer48484)](https://x.com/slimer48484/status/2097752569212756134) in September 2026. The current edit uses "Upping my p(Doom)", a 4:53 house rework with extended lyrics made with Suno by RadiatingTechHouse662 ([Suno](https://suno.com/song/b73b8f86-fe82-4813-8aa7-b90ab884ff97)), October 2026.
 - **Fonts:** Archivo, IBM Plex Mono and Cormorant Garamond (SIL Open Font License). Single-stroke EMS and Hershey fonts via the `hersheytext` package (OFL / public domain).
 
 ## License

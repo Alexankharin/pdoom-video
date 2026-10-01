@@ -11,7 +11,7 @@ import { SS_TAP_GLSL } from '../engine/gl';
 export const FRAG_DROSTE = /* glsl */ `
 ${SS_TAP_GLSL}
 uniform vec2 res; uniform float time;
-uniform sampler2D src; uniform float s; uniform float zoom; uniform float twist; uniform float spin;
+uniform sampler2D src; uniform float s; uniform float zoom; uniform float twist; uniform float spin; uniform float twDir;
 uniform sampler2D term; uniform float termLevel;
 uniform sampler2D atlas; uniform float atlasRows; uniform vec4 labelRect; // plate uv: x0, y0, x1, y1 (y up)
 vec2 cmul(vec2 a, vec2 b) { return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x); }
@@ -70,7 +70,7 @@ vec3 drosteAt(vec2 uv) {
   vec3 a = sampleAt(z, 0.0, lv0);
   vec3 col = a;
   if (twist > 0.0) {
-    vec3 b = sampleAt(z, 1.0, lv1);
+    vec3 b = sampleAt(z, twDir, lv1);
     col = mix(a, b, twist);
   }
   return col;

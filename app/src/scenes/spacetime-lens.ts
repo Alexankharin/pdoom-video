@@ -9,6 +9,10 @@
 import * as THREE from 'three';
 import { FSPass, W, H, SCALE, scaleContext2D } from '../engine/gl';
 
+/** Where part 1 of `spacetime` leaves the singularity (the lens centre when the hole is born, screen px):
+ *  the spark there is picked up by `loss` as the loss curve's pen. */
+export const SINGULARITY_PX = { x: W / 2 - 14.4, y: H / 2 + 3.2 };
+
 const FRAG = /* glsl */ `
 uniform vec2 uC;            // lens centre (screen px, y down)
 uniform float uRs;          // shadow radius (px)

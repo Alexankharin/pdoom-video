@@ -2,10 +2,14 @@
 // path, while sibling branches (the continuations not taken) sprout at every node with their tokens
 // and probabilities, and keep branching into the dark. World px, y down; the root sits exactly on
 // hook 4's exit (the reed's hairline at y=629, the shuttle's spark at x=300).
+// Take 2 is a second draw from the same distribution: the same probabilities (same model, same
+// context), the tree laid out mirrored (the continuations not taken hang on the other side), its
+// unlabelled futures re-sampled, and a sampling pointer that runs down the final candidates on the
+// 16ths and brakes on the same word.
 import { rgba } from '../engine/palette';
 import { F, font, measure } from '../engine/type';
 import { Lyrics, type Word } from '../engine/lyrics';
-import { clamp, ease, hash, lerp, prog } from '../engine/util';
+import { clamp, ease, hash, lerp, prog, frameIdx } from '../engine/util';
 
 export const Y0 = 629;
 export const ROOT_X = 300;
@@ -57,9 +61,15 @@ export class LoomTree {
   /** Rough world bounds of the grown tree. */
   bounds = { x0: 0, x1: 0, y0: 0, y1: 0 };
   tSample: number; // when the final token's candidates appear (the sampling)
+  take: number;
+  /** take 2: the sampling pointer's hops (time, row y, label x) — it lands on the trunk's token */
+  hops: { t: number; y: number; x: number }[] = [];
 
-  constructor(words: Word[]) {
+  constructor(words: Word[], o: { take?: number; tSampleMax?: number } = {}) {
     this.words = words;
+    const take = (this.take = o.take ?? 1);
+    const sgn = take === 2 ? -1 : 1; // mirrored layout
+    const seed = take === 2 ? 1009 : 0; // the unlabelled futures are re-sampled
     // trunk layout
     let x = ROOT_X;
     words.forEach((w, i) => {
@@ -73,7 +83,7 @@ export class LoomTree {
     });
     this.nodes.push(x);
     const last = words[words.length - 1]!, prev = words[words.length - 2]!;
-    this.tSample = lerp(prev.start, last.start, 0.2);
+    this.tSample = Math.min(lerp(prev.start, last.start, 0.2), o.tSampleMax ?? 1e9);
     // alternatives and their descendants
     ALTS.forEach((alts, i) => {
       const nx = this.nodes[i]!;
@@ -84,33 +94,47 @@ export class LoomTree {
         const size = last ? 40 : 32;
         const ex = nx + REACH[i]!;
         const b: Branch = {
-          from: { x: nx, y: Y0 }, to: { x: ex, y: Y0 + a.off }, label: a.label, p: a.p, size, depth: 1,
+          from: { x: nx, y: Y0 }, to: { x: ex, y: Y0 + (i >= 3 ? 1 : sgn) * a.off }, label: a.label, p: a.p, size, depth: 1,
           t0: t0 + (last ? 0.02 : 0.03) * k, dur: last ? 0.12 + 0.0001 * Math.abs(a.off) : 0.16 + 0.00022 * Math.abs(a.off), lx: ex + 12, lw: measure(a.label, this.famMono, size), node: i, kids: [],
           strike: last,
         };
-        this.grow(b, 2, i * 31 + k * 7);
+        this.grow(b, 2, i * 31 + k * 7 + seed);
         this.branches.push(b);
       });
       // the long tail: thin unlabelled continuations fanning between the named ones
-      const offs = alts.map((a) => a.off);
+      // (the last two nodes keep their sides: mirrored they would collide with "Loom" and its candidates)
+      const offs = alts.map((a) => (i >= 3 ? 1 : sgn) * a.off);
       const lo = Math.min(...offs.filter((o) => o < 0), -120), hi = Math.max(...offs.filter((o) => o > 0), 120);
       for (let k = 0; k < WISPS[i]!; k++) {
         const up = k % 2 === 0;
-        const u = hash(i, k, 3);
+        const u = hash(i, k, 3 + seed);
         const off = up ? lerp(lo * 0.55, lo * 1.06, u) : lerp(hi * 0.55, hi * 1.06, u);
         if (offs.some((o) => Math.abs(o - off) < 26)) continue;
-        const ex = nx + REACH[i]! * (0.55 + 0.35 * hash(i, k, 4));
+        const ex = nx + REACH[i]! * (0.55 + 0.35 * hash(i, k, 4 + seed));
         const b: Branch = {
           from: { x: nx, y: Y0 }, to: { x: ex, y: Y0 + off }, label: '', p: 0.005 + 0.02 * hash(i, k, 5), size: 0, depth: 1,
           t0: t0 + 0.06 + 0.02 * k, dur: 0.2 + 0.0002 * Math.abs(off), lx: ex + 4, lw: 0, node: i, kids: [],
         };
-        this.grow(b, 3, i * 57 + k * 11);
+        this.grow(b, 3, i * 57 + k * 11 + seed);
         this.branches.push(b);
       }
     });
     const all = this.flat();
     this.bounds.x0 = ROOT_X; this.bounds.x1 = Math.max(...all.map((b) => b.lx + b.lw + (b.strike ? PROB_W : 0)), x);
     this.bounds.y0 = Math.min(...all.map((b) => b.to.y)) - 40; this.bounds.y1 = Math.max(...all.map((b) => b.to.y)) + 40;
+    if (take === 2) {
+      // the pointer walks the candidate list (top to bottom, wrapping) and brakes onto the trunk's token
+      const nLast = words.length - 1;
+      const rows = this.branches.filter((b) => b.strike).map((b) => ({ y: b.to.y, x: b.lx - 14 }));
+      rows.push({ y: Y0 - 24 - this.loomSize * 0.3, x: this.tokX[nLast]! - 16 });
+      rows.sort((a, b) => a.y - b.y);
+      const iL = rows.findIndex((r) => r.x === this.tokX[nLast]! - 16);
+      let h = last.start;
+      for (let j = 0; h > this.tSample - 1e-3 && j < 40; j++) {
+        this.hops.unshift({ t: h, ...rows[(((iL - j) % rows.length) + rows.length) % rows.length]! });
+        h -= Math.max(0.028, 0.1 - 0.014 * j); // decelerating into the landing
+      }
+    }
   }
 
   /** Recursive sub-branches: fewer, smaller, dimmer and later with depth. */
@@ -206,7 +230,7 @@ export class LoomTree {
       if (b.depth === 1) {
         // probability and a tiny bar: under the token; beside it for the final candidates (a readable
         // distribution, flickering until the sample is drawn)
-        const flick = b.strike && t < loom.start ? Math.floor(t * 30) : -1;
+        const flick = b.strike && t < loom.start ? frameIdx(t) >> 1 : -1;
         const pv = flick >= 0 ? clamp(b.p + (hash(flick, b.lx) - 0.5) * 0.06, 0.01, 0.99) : b.p;
         if (b.strike) {
           const px0 = b.lx + b.lw + 16;
@@ -232,6 +256,15 @@ export class LoomTree {
     const tip = this.tipX(t);
     ws.forEach((w, i) => {
       const nx = this.nodes[i]!;
+      // the last token's slot: a dim ghost of the candidate on the trunk while the sample is drawn
+      if (i === nLast && t < w.start && t >= this.tSample) {
+        c.save();
+        c.textBaseline = 'alphabetic';
+        c.font = font(this.famLoom, this.loomSize);
+        c.fillStyle = rgba('bone', 0.3 * prog(t, this.tSample, this.tSample + 0.1));
+        c.fillText(w.w.replace(/[^A-Za-z]/g, ''), this.tokX[i]!, Y0 - 24);
+        c.restore();
+      }
       if (t < w.start - 0.02 && i > 0) return;
       c.fillStyle = rgba('bone', 0.95);
       c.beginPath(); c.arc(nx, Y0, 5, 0, Math.PI * 2); c.fill();
@@ -260,7 +293,14 @@ export class LoomTree {
         c.textBaseline = 'top';
         // the marker is drawn (IBM Plex Mono has no ▸; the fallback glyph came from a system font)
         const pre = `p ${CHOSEN_P[i]!.toFixed(2)}  `, tx = 6 / s, ty = (24 + 12) / s;
-        c.fillText(`${pre}  SAMPLED`, tx, ty);
+        c.fillText(`${pre}  SAMPLED${this.take === 2 ? ' · 2 OF 2' : ''}`, tx, ty);
+        if (this.take === 2) {
+          const fk = prog(t, loom.end - 0.05, loom.end + 0.1);
+          c.letterSpacing = '1px';
+          c.fillStyle = rgba('ash', 0.9 * fk);
+          c.font = font(this.famMono, 14);
+          c.fillText('seed 2 · same context · same token', tx, ty + 26 / s);
+        }
         const cell = c.measureText('M').width - 3, mx = tx + c.measureText(pre).width + cell / 2;
         const cap = c.measureText('S'), my = ty + (cap.actualBoundingBoxDescent - cap.actualBoundingBoxAscent) / 2;
         const th = 0.44 * 17, tw = 0.38 * 17;
@@ -279,6 +319,15 @@ export class LoomTree {
       }
       c.restore();
     });
+    // ---- take 2: the sampling pointer
+    if (this.hops.length && t >= this.hops[0]!.t && t < loom.start + 0.5) {
+      let hp = this.hops[0]!;
+      for (const h of this.hops) if (t >= h.t) hp = h;
+      const a = 1 - prog(t, loom.start + 0.25, loom.start + 0.5);
+      const sz = 22;
+      c.fillStyle = rgba('signal', a);
+      c.beginPath(); c.moveTo(hp.x - sz * 0.5, hp.y - sz * 0.45); c.lineTo(hp.x + sz * 0.3, hp.y); c.lineTo(hp.x - sz * 0.5, hp.y + sz * 0.45); c.closePath(); c.fill();
+    }
   }
 }
 

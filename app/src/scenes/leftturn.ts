@@ -7,12 +7,14 @@
 //     contour lines ripple. On "you" the camera cranes out with a quarter-turn: the crater is an
 //     eye, the terrain is the mask (a topographic smile). YOU / ARE are stamped on it as map
 //     labels; the second eye lights; a deadpan callout files it as an unplanned object.
-//  3. "Without a single CDR": a whip north to the review schedule on the same sheet. Time runs
+//  3. "Without a single `cdr`": a whip north to the review schedule on the same sheet. Time runs
 //     along x at the song's rate: the lyric words are Gantt bars filled as sung, cascading into
-//     the milestone lane; SRR and PDR are stamped on the beats; the playhead stalls at an empty,
-//     dashed CDR slot while the camera punches in on each syllable; then it zips past TRR
-//     (skipped) to LAUNCH (ahead of schedule). Everything drains but the empty slot, which
-//     folds into the orange caret of the next prompt.
+//     the milestone lane; SRR and PDR are stamped on the beats; the playhead stalls at the empty,
+//     dashed CDR (Critical Design Review) slot. The lyric is Lisp's `cdr`, typeset as code: on
+//     "could-" the slot unfolds into a cons cell [CDR | ], its cdr box empty and blinking; on "-er"
+//     nil's slash slams into it (STATUS: NOT HELD; > (cdr '(CDR)) NIL). The playhead zips past
+//     TRR (skipped) to LAUNCH (ahead of schedule). Everything drains but the nil slash, which
+//     stands upright into the caret of the Genie prompt.
 import * as THREE from 'three';
 import { Scene, type Frame, type PostOverrides } from '../engine/scene';
 import { W, H } from '../engine/gl';
@@ -38,8 +40,12 @@ function mixCam(a: Cam, b: Cam, k: number): Cam {
   return { x: lerp(a.x, b.x, k), y: lerp(a.y, b.y, k), rot: lerp(a.rot, b.rot, k), zoom: Math.exp(lerp(Math.log(a.zoom), Math.log(b.zoom), k)) };
 }
 
-/** The gato prompt's caret on its first frame (screen px): the slot lands exactly there. */
-const CARET = { x: 1150, y: 631, w: 5.6, h: 86 };
+/**
+ * The Genie prompt's caret on its first frame (screen px): the nil slash lands exactly there.
+ * prompt.ts (look 'float') frames its first shot on the caret at zoom 1.6 with the drift eased in
+ * from 0, so the caret (3.5 x 54 UI px) sits at screen (1149.2, 631), 5.6 x 86.4 px, upright.
+ */
+const CARET = { x: 1149.2, y: 631, w: 5.6, h: 86.4 };
 
 export default class LeftTurn extends Scene {
   map!: ReturnType<typeof makeMapPass>;
@@ -63,7 +69,7 @@ export default class LeftTurn extends Scene {
     const beatBefore = (t: number) => au.timeOfBeat(Math.floor(au.beatAt(t) + 1e-6));
     const downAfter = (t: number) => au.downbeats.find((d) => d >= t - 1e-6) ?? beatAfter(t);
     T.l5 = ly.get('Sharp left');
-    T.l6 = ly.get('single CDR');
+    T.l6 = ly.get('Without a single');
     T.sharp = wordOf(T.l5, 'sharp').start;
     T.left = wordOf(T.l5, 'left').start;
     T.turn = wordOf(T.l5, 'turn').start;
@@ -75,15 +81,16 @@ export default class LeftTurn extends Scene {
     T.without = wordOf(T.l6, 'without').start;
     const cdr = wordOf(T.l6, 'cdr');
     T.cdr = cdr.start;
-    T.cdrSyl = cdr.syl && cdr.syl.length >= 3 ? cdr.syl.map((s) => s[0]) : [0, 1, 2].map((i) => cdr.start + i * 0.4);
+    // `cdr` is sung "could-er": two syllables
+    T.cdrSyl = cdr.syl && cdr.syl.length >= 2 ? cdr.syl.slice(0, 2).map((s) => s[0]) : [cdr.start, lerp(cdr.start, cdr.end, 0.37)];
     T.tPDR = beatAfter(T.sharp + 0.12);
     T.db1 = downAfter(T.you);
     T.call = beatAfter(T.are + 0.2);
     T.whip0 = Math.max(beatBefore(T.without), T.without - 0.3) - 0.03;
     const SRR = beatAfter(T.without + 0.05);
     const PDR = downAfter(SRR + 0.05);
-    const TRR = downAfter(T.cdrSyl[1]!);
-    T.launch = beatAfter(T.cdrSyl[2]! + 0.1);
+    const TRR = downAfter(T.cdrSyl[1]! + 0.05);
+    T.launch = Math.min(beatAfter(TRR + 0.1), beatBefore(this.ctx.end - 0.8));
     T.snare = beatBefore(T.cdr);
     T.drain0 = beatBefore(this.ctx.end - 0.05);
     T.beats = [];
@@ -149,18 +156,18 @@ export default class LeftTurn extends Scene {
     return { x: this.sch.X(t) + off.x, y: GANTT.GL - 222 + off.y, rot, zoom: z };
   }
 
-  /** The empty slot, one punch per syllable. */
+  /** The empty slot, one punch per syllable ("could-" lands on the cut, "-er" punches in). */
   camSlot(t: number): Cam {
     const T = this.T;
-    const [, D, R] = T.cdrSyl as [number, number, number];
-    let z = 2.1 * (1 + 0.1 * prog(t, T.cdr, D, ease.inOutQuad)) * (1 + 0.16 * ease.outExpo(prog(t, D, D + 0.14))) * (1 + 0.18 * ease.outExpo(prog(t, R, R + 0.14)));
-    // the snare between the syllables nudges the frame: a punch and a small roll
-    const sn = this.ctx.audio.events('snare', T.cdr + 0.2, D - 0.05).map((e) => e[0]);
+    const [C, R] = T.cdrSyl as [number, number];
+    let z = 1.95 * (1 + 0.1 * prog(t, C, R, ease.inOutQuad)) * (1 + 0.2 * ease.outExpo(prog(t, R, R + 0.14)));
+    // the snares between the syllables nudge the frame: a punch and a small roll
+    const sn = this.ctx.audio.events('snare', C + 0.2, R - 0.05).map((e) => e[0]);
     let roll = 0;
-    for (const s of sn) { z *= 1 + 0.06 * pulse(t, s, 0.1); roll += 0.025 * ease.outBack(prog(t, s, s + 0.25)); }
-    const rot = roll + 0.035 * ease.outExpo(prog(t, D, D + 0.14)) - 0.08 * ease.outExpo(prog(t, R, R + 0.14));
+    for (const s of sn) { z *= 1 + 0.05 * pulse(t, s, 0.1); roll += 0.025 * ease.outBack(prog(t, s, s + 0.25)); }
+    const rot = roll - 0.07 * ease.outExpo(prog(t, R, R + 0.14));
     const s = this.sch.slot;
-    return { x: s.x + 190 + 20 * prog(t, T.cdr, T.launch), y: s.y + 10, rot, zoom: z };
+    return { x: s.x + 200 + 20 * prog(t, C, T.launch), y: s.y + 80, rot, zoom: z };
   }
 
   /** The reveal of the whole schedule, then the push into the slot, anchored where the caret will be. */
@@ -173,7 +180,7 @@ export default class LeftTurn extends Scene {
     const zEnd = (CARET.h / 2) / GANTT.DS;
     const k = ease.inOutCubic(prog(t, T.drain0, end - 0.07));
     const z = Math.exp(lerp(Math.log(wide.zoom), Math.log(zEnd), k));
-    const s = this.sch.slot;
+    const s = this.sch.nil;
     const anch: Cam = { x: s.x - (CARET.x - W / 2) / z, y: s.y - (CARET.y - H / 2) / z, rot: 0, zoom: z };
     const c = mixCam(wide, anch, k);
     c.zoom = z;

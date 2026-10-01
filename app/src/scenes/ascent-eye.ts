@@ -10,6 +10,7 @@ export const EYE_FRAG = /* glsl */ `
 uniform vec2 uRes;
 uniform float uT, uOpen, uZoom, uRot, uPupil, uShockR, uShockA, uLeak, uLightA, uBright, uSlitGlow, uSlitW;
 uniform vec2 uCam;
+uniform vec2 uLook; // iris/pupil offset (eye units): where the basilisk is looking
 
 const float A = ${EYE.A.toFixed(3)};
 const float HU = ${EYE.HU.toFixed(3)};
@@ -117,7 +118,7 @@ void main() {
 
   if (inOrbit && y < eU && y > eL) {
     // ---------------- eyeball ----------------
-    vec2 ic = q - vec2(0.0, 0.02 + 0.5 * TILT * 0.0);
+    vec2 ic = q - vec2(0.0, 0.02) - uLook;
     float ri = length(ic);
     float ai = atan(ic.y, ic.x);
     float n1 = snoise(vec2(ai * 5.0, ri * 7.0));
@@ -231,6 +232,6 @@ export function makeEyePass() {
     uT: { value: 0 }, uOpen: { value: 0 }, uZoom: { value: 1 }, uRot: { value: 0 }, uPupil: { value: 0.12 },
     uShockR: { value: 0 }, uShockA: { value: 0 }, uLeak: { value: 0 }, uLightA: { value: 2.2 },
     uBright: { value: 1 }, uSlitGlow: { value: 0 }, uSlitW: { value: 0.01 },
-    uCam: { value: new THREE.Vector2(0, 0) },
+    uCam: { value: new THREE.Vector2(0, 0) }, uLook: { value: new THREE.Vector2(0, 0) },
   });
 }

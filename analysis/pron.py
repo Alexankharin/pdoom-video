@@ -14,6 +14,7 @@ PRON = {
     "E": "ee",
     "MLP,": "em el pee",
     "CDR": "see dee are",
+    "`cdr`": "could er",
     "PTO": "pee tee oh",
     "GPU": "gee pee you",
     "RLHF": "are el aitch eff",
@@ -33,6 +34,7 @@ ALT = {
     "NVDA": ["en vee dee ay", "envidia", "nvidia"],
     "Neumann's": ["noymans", "newmans"],
     "Gato,": ["gato", "gahtoe"],
+    "`cdr`": ["could er", "see dee are"],
 }
 
 

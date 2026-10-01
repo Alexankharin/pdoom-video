@@ -1,26 +1,33 @@
-// FIG. 10 `fuse` — the quiet tail of chorus 3.
-//  1. "Too late now, we lit the fuse": the spark's line is revealed as a braided, engraved fuse. The lyric rides
-//     along the cord; the spark burns through it in time with the voice (each word ignites as it is sung), the words
-//     glow, then char to ash and crumble. "fuse" (a held note) burns letter by letter; a downbeat cuts to a macro.
+// FIG. 10 `fuse` — the tail of chorus 5 (the sparse chorus: drums, the bass gone), after `atoms`.
+//  1. "Too late now, we lit the fuse": the cut from `atoms` lands on the spark where it left it (ATOMS_HANDOFF: the
+//     free end of the paperclip's wire), and the hairline it was dragging is revealed as a braided, engraved fuse.
+//     The lyric rides along the cord, starting with the tail of the previous line ("anyway", still being sung
+//     across the cut); the spark burns through it in time with the voice (each word ignites as it is sung), the
+//     words glow, then char to ash and crumble. "fuse" (a held note) burns letter by letter; a beat cuts to a macro.
 //  2. "Orthogonality thesis blues" (revision 2: no more ultramarine, the plate stays in ink, bone and signal, lit
 //     only by the spark). The camera tilts down after the spark as it drops onto a chart; it draws the x axis
 //     (INTELLIGENCE →) while "Orthogonality thesis" is set along it; the y axis (GOALS ↑) shoots up on a beat; a
 //     scatter of minds fills the plane, nodding along, uncorrelated. The flat regression line (r = 0.00) is a
-//     guitar string: "blues" stands on it and bends it with the singer's actual pitch — the held C4 with its
-//     vibrato, then the flip up an octave (tab notation: vib., bend +12) — and it rings when released; the
-//     B-flat that follows earns a lone orange flat sign. The last half-beat inhales before the cut to the bridge.
+//     guitar string: "blues" stands on it and bends it with the singer's actual pitch (fuse-pitch.ts, measured
+//     from the new vocal) — the held C4 with its vibrato, the glide up an octave (tab notation: vib., bend +12),
+//     then the blues phrase down inside the same word, B-flat, G, F, the string letting down step by step; a
+//     scrap of staff notates each note as it is sung, the B-flat (the blue note) with an orange flat.
+//     Exit into `loom` (part 'mask', "From masked pre-training days"): on the last downbeat the chart's labels
+//     are masked token by token, like loom's pre-training page, and the camera inhales into the spark, landing it
+//     on the left edge of loom's first [MASK] block, where the unmasking scan line starts on "From".
 import * as THREE from 'three';
 import { Scene, type Frame, type PostOverrides } from '../engine/scene';
 import { FSPass, Layer2D, W, H } from '../engine/gl';
 import { LineBatch } from '../engine/lines';
 import { type Line, type Word, norm } from '../engine/lyrics';
 import { HEX, LIN, rgba } from '../engine/palette';
-import { F, font, layout, type TextLayout } from '../engine/type';
+import { F, font, layout, measure, type TextLayout } from '../engine/type';
 import { GLSL_COMMON } from '../engine/glsl/common';
 import { clamp, ease, lerp, prog, hash, noise1, pulse, TAU, smoothstep, polylineLengths, pointAtLength, mulberry32, type V2, frameIdx } from '../engine/util';
 import { sparkHead, sparkParticles } from './_motifs';
 import { PDoom, formatPDoom } from '../engine/hud';
-import { bluesPitch } from './fuse-pitch';
+import { bluesPitch, bluesNotes } from './fuse-pitch';
+import { ATOMS_HANDOFF } from './atoms-layout';
 
 type Ctx2 = CanvasRenderingContext2D;
 interface Cam { x: number; y: number; z: number; r: number }
@@ -190,9 +197,13 @@ const XEND = 1720, YEND = 150;
 /** The regression line, strung like a guitar string: anchors, rest height, pitch response. */
 const STRING = { x0: 470, x1: 1650, y: 540, rest: 59.1, pxPerSemi: 23, echo: 0.55, ringHz: 5.2, hz: 1000 };
 const XP = 1060; // where "blues" pushes the string (the word's centre)
-const BLUE_NOTE = { x: 640, y: 330 };
-/** Where the spark sits at the cut: on the central axis of the transformer stack that opens the bridge. */
-const HANDOFF = { x: 1045, y: 600 }; // the scrap of staff carrying the B-flat (left end, middle line)
+const BLUE_NOTE = { x: 520, y: 330 };
+/**
+ * Where the spark sits at the cut: the left edge of loom's first [MASK] block ("FROM"), where its unmasking
+ * scan line starts. Mirrors loom.ts drawMaskLine (take 1: rows at x 120, baselines 480/650, Archivo 100/900 at
+ * 136 px fitted to W - 240); recomputed in init.
+ */
+const HANDOFF = { x: 108, y: 432 };
 
 export default class Fuse extends Scene {
   ground = new FSPass(GROUND_FRAG, { iA: { value: new THREE.Vector3() }, iB: { value: new THREE.Vector3() }, spark: { value: new THREE.Vector2() }, zoom: { value: 1 }, time: { value: 0 }, bright: { value: 1 } });
@@ -209,7 +220,8 @@ export default class Fuse extends Scene {
 
   L1!: Line; L2!: Line;
   wFuse!: Word; wOrth!: Word; wThesis!: Word; wBlues!: Word;
-  T0 = 0; tEnd = 0; tDown1 = 0; tMacro = 0; tDrop0 = 0; tDrop1 = 0; tBlue = 0; tYAxis = 0; tFit = 0; beatLen = 0.4645;
+  wAny!: Word; cordWords: Word[] = []; cordText = ''; wideX = 760; notes: { t: number; midi: number }[] = []; tExit = 0;
+  T0 = 0; tEnd = 0; tDown1 = 0; tFollow = 0; tMacro = 0; tDrop0 = 0; tDrop1 = 0; tBlue = 0; tYAxis = 0; tFit = 0; beatLen = 0.4645;
   tString = 0; tBluesDb = 0; tFlat = Infinity; tLeap = Infinity; tLeapEnd = Infinity; tBlueNote = Infinity; tBack = 0;
 
   // fuse geometry
@@ -246,6 +258,11 @@ export default class Fuse extends Scene {
     this.wOrth = find(this.L2, 'orthogonal');
     this.wThesis = find(this.L2, 'thesis');
     this.wBlues = find(this.L2, 'blues');
+    // the last word of `atoms` is still being sung on the cut: it burns first
+    const lAny = lyrics.get('take my atoms anyway');
+    this.wAny = lAny.words[lAny.words.length - 1]!;
+    this.cordWords = [this.wAny, ...this.L1.words];
+    this.cordText = `${this.wAny.w}   ${this.L1.text}`;
     const au = audio;
     this.T0 = this.ctx.start;
     this.tEnd = this.ctx.end;
@@ -253,10 +270,13 @@ export default class Fuse extends Scene {
     this.beatLen = au.timeOfBeat(b0 + 1) - au.timeOfBeat(b0);
     const downAfter = (t: number) => au.downbeats.find((d) => d > t + 1e-3) ?? t + this.beatLen * 4;
     this.tDown1 = downAfter(this.T0);
+    void this.tDown1;
     this.tBlue = this.wOrth.start;
     // prefer downbeats; fall back to plain beats (never to arbitrary times)
     const beatAfter = (t: number) => au.timeOfBeat(Math.ceil(au.beatAt(t) - 1e-3));
     const nearestBeat = (t: number) => au.timeOfBeat(Math.round(au.beatAt(t)));
+    // the camera has let go of the hand-off framing by the beat after "Too"
+    this.tFollow = beatAfter(this.L1.words[0]!.start + 0.3);
     this.tMacro = au.downbeats.find((d) => d > this.wFuse.start + 0.5 && d < this.tBlue - 0.6) ?? nearestBeat(lerp(this.wFuse.start, this.tBlue, 0.45));
     // the camera tilts down onto the chart from the beat before "Orthogonality"
     this.tDrop0 = Math.min(this.tBlue - 0.15, au.timeOfBeat(Math.floor(au.beatAt(this.tBlue - 0.1))));
@@ -278,15 +298,15 @@ export default class Fuse extends Scene {
     this.path = catmull(ctrl, 30);
     this.pathL = polylineLengths(this.path);
     // lyric along the cord
-    this.lay = layout(this.L1.text, this.fam, this.size, 1);
+    this.lay = layout(this.cordText, this.fam, this.size, 1);
     const sStart = this.sAtX(-60);
     this.sText0 = sStart;
     // word of each char
     const wordOfChar: (Word | null)[] = [];
     {
       let ci = 0;
-      const txt = Array.from(this.L1.text);
-      for (const w of this.L1.words) {
+      const txt = Array.from(this.cordText);
+      for (const w of this.cordWords) {
         const wc = Array.from(w.w);
         // find w's first char from ci
         let k = ci;
@@ -308,17 +328,28 @@ export default class Fuse extends Scene {
       const g = this.lay.glyphs[Math.max(0, i)]!;
       return this.sText0 + g.x + g.w;
     };
-    const kn: [number, number][] = [[this.T0 - 0.2, this.sText0 - 170]];
-    for (const w of this.L1.words) kn.push([w.start, firstGlyphS(w) - 2]);
+    const kn: [number, number][] = [[this.wAny.start - 0.5, this.sText0 - 170]];
+    for (const w of this.cordWords) kn.push([w.start, firstGlyphS(w) - 2]);
     const wf = this.wFuse;
     kn.push([Math.max(wf.start + 0.2, wf.end - 0.12), lastGlyphS(wf) + 6]);
     kn.push([wf.end + 2, lastGlyphS(wf) + 90]);
     this.burnKnots = kn;
     this.glyphs = this.lay.glyphs.filter((g) => g.ch !== ' ').map((g) => {
       const s0 = this.sText0 + g.x, s1 = s0 + g.w;
-      const w = wordOfChar[g.i] ?? this.L1.words[0]!;
-      return { ch: g.ch, s0, s1, tIgn: this.timeAtBurn(s0 + g.w * 0.15), tDone: this.timeAtBurn(s1), word: w, wi: this.L1.words.indexOf(w), seed: g.i };
+      const w = wordOfChar[g.i] ?? this.cordWords[0]!;
+      return { ch: g.ch, s0, s1, tIgn: this.timeAtBurn(s0 + g.w * 0.15), tDone: this.timeAtBurn(s1), word: w, wi: this.cordWords.indexOf(w), seed: g.i };
     });
+    // the whole of "Too late now, we lit the fuse" in frame
+    this.wideX = (this.at(firstGlyphS(this.L1.words[0]!)).x + this.at(lastGlyphS(this.wFuse)).x) / 2;
+    // hand-off into loom: the left edge of its first [MASK] block (see HANDOFF)
+    {
+      const lf = F.archivo(100, 900);
+      const l2 = lyrics.get('masked pre-training');
+      const rows = [l2.words.slice(0, 2), l2.words.slice(2)];
+      const rowW = (ws: Word[], sz: number) => ws.reduce((a, w) => a + measure(w.w.toUpperCase(), lf, sz) + sz * 0.3, -sz * 0.3) + 24;
+      const sz = 136 * Math.min(1, (W - 240) / Math.max(...rows.map((r) => rowW(r, 136))));
+      HANDOFF.x = 120 - 12; HANDOFF.y = 480 - sz * 0.78 + sz * 0.43;
+    }
 
     // ---- blue plane: "Orthogonality thesis" along the x axis
     const ofam = F.archivo(100, 500);
@@ -356,7 +387,7 @@ export default class Fuse extends Scene {
       { x0: 1560, x1: 1760, y0: STRING.y - 44, y1: STRING.y + 40 },   // r = 0.00
       { x0: 1000, x1: 1760, y0: 120, y1: 200 },   // footnote
       { x0: XP - 215, x1: XP + 215, y0: STRING.y - 150, y1: STRING.y + 8 },   // "blues" at rest on its string
-      { x0: BLUE_NOTE.x - 20, x1: BLUE_NOTE.x + 170, y0: BLUE_NOTE.y - 70, y1: BLUE_NOTE.y + 70 },   // the staff scrap
+      { x0: BLUE_NOTE.x - 40, x1: BLUE_NOTE.x + 320, y0: BLUE_NOTE.y - 70, y1: BLUE_NOTE.y + 90 },   // the staff scrap
     ];
     const lab: Agent[] = [];
     labels.forEach(([name, u, v], i) => {
@@ -451,11 +482,16 @@ export default class Fuse extends Scene {
       if (p != null && t >= wb.start && this.tFlat === Infinity) this.tFlat = t;
       if (p != null && p > STRING.rest + 2.5 && t < wb.end + 0.05 && this.tLeap === Infinity) this.tLeap = t;
       if (p != null && p > STRING.rest + 11.5 && t < wb.end + 0.05 && this.tLeapEnd === Infinity) this.tLeapEnd = t;
-      if (p != null && after && this.tBlueNote === Infinity) this.tBlueNote = t;
     }
     if (this.tLeap === Infinity) this.tLeap = wb.end - 0.2;
     if (this.tLeapEnd === Infinity) this.tLeapEnd = Math.min(wb.end, this.tLeap + 0.15);
-    this.tBack = this.ctx.audio.downbeats.find((d) => d > wb.end + 0.3 && d < this.tEnd - 0.2) ?? this.tEnd - this.beatLen;
+    // the notes of the melisma (for the staff scrap); the blue note is the B-flat after the octave
+    this.notes = bluesNotes(wb.start).filter((n) => n.t < this.tEnd);
+    this.tBlueNote = this.notes.find((n) => n.t > this.tLeapEnd && n.midi % 12 === 10)?.t ?? Infinity;
+    // the exit: the last downbeat inside the window (the bridge's first bar; "From" is its pickup)
+    const au = this.ctx.audio;
+    this.tExit = [...au.downbeats].reverse().find((d) => d < this.tEnd - 0.2 && d > wb.start + 0.5) ?? au.timeOfBeat(Math.floor(au.beatAt(this.tEnd - 0.05)));
+    this.tBack = this.tExit;
   }
   /** String displacement (px, upward) at t. */
   bend(t: number) {
@@ -514,16 +550,21 @@ export default class Fuse extends Scene {
   camFuse(t: number): Cam {
     const head = this.at(this.burnS(t));
     const wf = this.wFuse;
-    // 1) reveal: from far (a hairline with a spark) into the cord, landing on the first downbeat
-    const kIn = prog(t, this.T0, this.tDown1, ease.inOutCubic);
-    const follow: Cam = { x: head.x + 250, y: head.y - 70, z: lerp(0.42, 1.12, kIn), r: lerp(0.05, -0.015, kIn) };
+    // 1) the cut from `atoms`: the spark exactly where it was on screen (ATOMS_HANDOFF), the cord still a thin
+    //    line at this distance; the camera then eases in and lets the spark drift to its reading position
+    const P = ATOMS_HANDOFF;
+    const kIn = prog(t, this.T0, this.tFollow, ease.inOutCubic);
+    const zA = lerp(0.55, 1.12, kIn);
+    const anchor: Cam = { x: head.x - (P.x - W / 2) / zA, y: head.y - (P.y - H / 2) / zA, z: zA, r: 0 };
+    const follow: Cam = { x: head.x + 250, y: head.y - 70, z: 1.12, r: -0.015 };
+    let cam = lerpCam(anchor, follow, kIn);
     // 2) track the spark through the fast words, easing out to show the whole line
-    const wide: Cam = { x: lerp(head.x + 250, 760, 0.55), y: 520, z: 0.95, r: -0.01 };
-    let cam = lerpCam(follow, wide, prog(t, this.tDown1, wf.start, ease.inOutCubic));
+    const wide: Cam = { x: lerp(head.x + 250, this.wideX, 0.55), y: 520, z: 0.95, r: -0.01 };
+    cam = lerpCam(cam, wide, prog(t, this.tFollow - 0.15, wf.start, ease.inOutCubic));
     // 3) "fuse" is held: slow push onto the burning word
     const push: Cam = { x: head.x - 40, y: head.y - 90, z: 1.75, r: 0.02 };
     cam = lerpCam(cam, push, prog(t, wf.start - 0.1, this.tMacro, ease.inOutQuad));
-    // 4) downbeat: hard cut to a macro, drifting with the spark
+    // 4) on a beat: hard cut to a macro, drifting with the spark
     if (t >= this.tMacro) {
       const u = prog(t, this.tMacro, this.tBlue, ease.linear);
       cam = { x: head.x + 30 - 60 * u, y: head.y - 50 + 10 * u, z: lerp(3.3, 3.9, u), r: -0.11 + 0.03 * u };
@@ -539,23 +580,28 @@ export default class Fuse extends Scene {
     // arrive close on the axis and the words, pull back to the whole plane when the y axis shoots up
     const close: Cam = { x: 820, y: 700, z: 1.5, r: 0.012 };
     cam = lerpCam(close, cam, prog(t, this.tYAxis - 0.05, this.tYAxis + 0.5, ease.outExpo));
-    // "blues": push in on the string on its downbeat, ride the octave up, settle back out on the next downbeat
+    // "blues": push in on the string on its downbeat and ride the melisma: up the octave, down the blues phrase
     const D = this.bend(t);
     const push: Cam = { x: XP + 30, y: STRING.y - 150 - 0.5 * D, z: 1.36, r: 0.008 };
     const kIn = prog(t, this.tBluesDb - 0.05, this.tBluesDb + 0.42, ease.outExpo);
-    const kOut = prog(t, this.wBlues.end + 0.12, this.tBack + 0.05, ease.inOutCubic);
+    // the exit (the last beat, from the bridge's first downbeat): snap back out to the whole plane, then a slow
+    // inhale while the spark leaves the axis (see sparkFly)
+    const kOut = prog(t, this.tExit - 0.02, this.tExit + 0.2, ease.outExpo);
     cam = lerpCam(cam, push, kIn * (1 - kOut));
-    // final inhale into the spark during the last half beat: it lands on the axis of the tower that follows
-    // (the push keeps accelerating through the cut; the position lands a frame early so the last frame is on the mark)
-    const inh = prog(t, this.tEnd - this.beatLen * 0.5, this.tEnd, ease.inCubic);
-    const land = prog(t, this.tEnd - this.beatLen * 0.5, this.tEnd - 0.03, ease.inOutCubic);
-    if (inh > 0 || land > 0) {
-      const sx = this.sparkX(t);
-      const z = cam.z * (1 + 0.22 * inh);
-      const tgt = { x: sx - (HANDOFF.x - W / 2) / z, y: O.y - (HANDOFF.y - H / 2) / z };
-      cam = { x: lerp(cam.x, tgt.x, land), y: lerp(cam.y, tgt.y, land), z, r: cam.r * (1 - land) };
-    }
+    cam.z *= 1 + 0.05 * prog(t, this.tExit, this.tEnd, ease.inCubic);
     return cam;
+  }
+
+  /**
+   * The exit: the spark jumps off the x axis and flies across the chart to the left edge of loom's first
+   * [MASK] block (screen px), landing a frame before the cut. `p` is where it sits on the axis (screen px).
+   */
+  sparkFly(t: number, p: { x: number; y: number }) {
+    const k = prog(t, this.tExit + 0.1, this.tEnd - 0.025, ease.inOutCubic);
+    if (k <= 0) return p;
+    const c = { x: lerp(p.x, HANDOFF.x, 0.55), y: Math.min(p.y, HANDOFF.y) - 260 };
+    const m = 1 - k;
+    return { x: m * m * p.x + 2 * m * k * c.x + k * k * HANDOFF.x, y: m * m * p.y + 2 * m * k * c.y + k * k * HANDOFF.y };
   }
 
   // ------------------------------------------------------------------ render
@@ -618,11 +664,24 @@ export default class Fuse extends Scene {
       (b.iB!.value as THREE.Vector3).set(im.b, im.d, im.f);
       (b.spark!.value as THREE.Vector2).set(bp.x, bp.y);
       b.zoom!.value = cam.z;
-      b.dark!.value = 0.6 * prog(t, this.tEnd - this.beatLen * 0.5, this.tEnd, ease.inCubic);
+      b.dark!.value = 0.6 * prog(t, this.tExit, this.tEnd, ease.inCubic);
       b.time!.value = t;
       this.chart.render(renderer, out);
       this.drawChart(T.ctx, bm, t, cam.z, cam.x);
-      sparkP = fuseVisible ? { x: lerp(sparkP.x, bp.x, smoothstep(0.2, 0.9, drop)), y: lerp(sparkP.y, bp.y, smoothstep(0.2, 0.9, drop)) } : bp;
+      sparkP = fuseVisible ? { x: lerp(sparkP.x, bp.x, smoothstep(0.2, 0.9, drop)), y: lerp(sparkP.y, bp.y, smoothstep(0.2, 0.9, drop)) } : this.sparkFly(t, bp);
+      // its flight path, a hot hairline that cools behind it
+      if (t > this.tExit + 0.1) {
+        const n = 36;
+        let q = this.sparkFly(this.tExit + 0.1, bp);
+        for (let i = 1; i <= n; i++) {
+          const tt = lerp(this.tExit + 0.1, t, i / n);
+          const r = this.sparkFly(tt, bp);
+          const hot = Math.exp(-(t - tt) / 0.08);
+          const I = 0.5 + 2.2 * hot;
+          this.add.seg2(q.x, q.y, r.x, r.y, 1.6 + 1.2 * hot, [LIN.signal[0] * I, LIN.signal[1] * I, LIN.signal[2] * I], 0.9);
+          q = r;
+        }
+      }
     }
 
     // text layers
@@ -633,16 +692,16 @@ export default class Fuse extends Scene {
     this.ink.render(renderer, out);
 
     // the spark
-    const inh = prog(t, this.tEnd - this.beatLen * 0.5, this.tEnd, ease.inCubic);
+    const inh = prog(t, this.tExit, this.tEnd, ease.inCubic);
     const z = fuseVisible && !chartVisible ? this.camFuse(t).z : chartVisible && !fuseVisible ? this.camChart(t).z : 1;
     const sparkScale = clamp(0.8 + 0.5 * z, 0.9, 2.6) * (1 + 0.8 * inh) * (chartVisible ? 1.05 : 1);
     const headAt = (tb: number) => {
       if (tb < this.tDrop0 && fm) { const p = this.at(this.burnS(tb)); return apply(fm, p.x, p.y); }
-      if (tb >= this.tDrop1 && bm) return apply(bm, this.sparkX(tb), O.y);
+      if (tb >= this.tDrop1 && bm) return this.sparkFly(tb, apply(bm, this.sparkX(tb), O.y));
       return null;
     };
     const sb = drop > 0.5 ? this.over : this.add;
-    const inhAt = (tb: number) => prog(tb, this.tEnd - this.beatLen * 0.5, this.tEnd, ease.inCubic);
+    const inhAt = (tb: number) => prog(tb, this.tExit, this.tEnd, ease.inCubic);
     sparkParticles(sb, t, headAt, { rate: (tb) => 160 + 140 * inhAt(tb), rateMax: 300, life: 0.5, speed: 200 * sparkScale, gravity: 480 * sparkScale, intensity: 1.2, seed: 10, width: 1.5 * Math.min(1.6, sparkScale) });
     // sputter bursts on the beats (the fuse spits in time)
     const au = this.ctx.audio;
@@ -781,7 +840,7 @@ export default class Fuse extends Scene {
   drawChart(c: Ctx2, m: Xf, t: number, zoom: number, camX: number) {
     const au = this.ctx.audio;
     const bt = au.beatAt(t);
-    const inh = prog(t, this.tEnd - this.beatLen * 0.5, this.tEnd, ease.inCubic);
+    const inh = prog(t, this.tExit, this.tEnd, ease.inCubic);
     const bone = LIN.bone;
     const L = this.ink;
     const P = (x: number, y: number) => apply(m, x, y);
@@ -843,16 +902,22 @@ export default class Fuse extends Scene {
     c.save();
     c.setTransform(m.a, m.b, m.c, m.d, m.e, m.f);
     c.textBaseline = 'alphabetic';
+    // the exit: the chart's words are masked, token by token on the 16ths, like loom's pre-training page
+    const mq = t >= this.tExit ? Math.floor((bt - au.beatAt(this.tExit)) * 4) + 1 : 0;
+    const masked = (id: number) => mq > 0 && hash(id, 41) < mq * 0.26;
+    const maskBox = (x: number, y: number, w: number, h = 18) => { c.fillStyle = rgba('ash', 0.55); c.fillRect(x - 3, y - h + 4, w + 6, h); };
     c.font = font(F.mono(500), 17); c.letterSpacing = '5px';
     c.fillStyle = rgba('bone', 0.85 * guide);
     c.textAlign = 'right';
     c.fillText('INTELLIGENCE →', XEND - 10, O.y + 40);
+    if (masked(901)) { const w = c.measureText('INTELLIGENCE →').width; maskBox(XEND - 10 - w, O.y + 40, w); }
     c.textAlign = 'left';
-    if (ky > 0) { c.fillStyle = rgba('bone', 0.85 * ky); c.fillText('GOALS ↑', O.x + 22, YEND + 16); }
+    if (ky > 0) { c.fillStyle = rgba('bone', 0.85 * ky); c.fillText('GOALS ↑', O.x + 22, YEND + 16); if (masked(902)) maskBox(O.x + 22, YEND + 16, c.measureText('GOALS ↑').width); }
     c.letterSpacing = '0px';
     if (kf > 0) {
       c.font = font(F.mono(500), 18); c.fillStyle = rgba('bone', 0.9 * kf);
       c.fillText('r = 0.00', STRING.x1 - 22, STRING.y - 20);
+      if (masked(903)) maskBox(STRING.x1 - 22, STRING.y - 20, c.measureText('r = 0.00').width);
       c.font = font(F.mono(400), 13); c.fillStyle = rgba('bone', 0.55 * kf);
       c.fillText(`n = ${this.agents.length}`, STRING.x1 - 22, STRING.y + 30);
     }
@@ -878,11 +943,20 @@ export default class Fuse extends Scene {
       c.fillStyle = rgba('bone', 0.35 + 0.65 * k);
       c.fillText(g.ch, x, O.y + 104 + 14 * (1 - k));
     });
+    // the two sung words masked as whole tokens
+    const nO = Array.from(this.wOrth.w).length;
+    for (const [id, i0, i1] of [[904, 0, nO - 1], [905, nO + 1, this.orthLay.glyphs.length - 1]] as const) {
+      if (!masked(id)) continue;
+      const g0 = this.orthLay.glyphs[i0]!, g1 = this.orthLay.glyphs[i1]!;
+      maskBox(this.orthX0 + g0.x, O.y + 104 + 8, g1.x + g1.w - g0.x, 70);
+    }
     c.letterSpacing = '0px';
 
     // agents: pop in on the beats, then nod along (half of them on 1 & 3, half on 2 & 4)
     const wordBox = this.bluesBox(t, D);
+    let ai = -1;
     for (const a of this.agents) {
+      ai++;
       if (t < a.t0) continue;
       const k = prog(t, a.t0, a.t0 + 0.28, (x) => ease.outBack(x, 2.2));
       const beatInBar = ((bt % 2) + 2) % 2;
@@ -895,7 +969,7 @@ export default class Fuse extends Scene {
       if (inh > 0) { const sxp = this.sparkX(t); x = lerp(x, sxp, 0.06 * inh); y = lerp(y, O.y, 0.06 * inh); }
       const r = a.size * k * a.depth;
       // make room for the word as it bends through the crowd
-      const near = wordBox ? 1 - 0.8 * smoothstep(60, 0, Math.max(wordBox.x0 - x, x - wordBox.x1, wordBox.y0 - y, y - wordBox.y1)) : 1;
+      const near = wordBox ? 1 - 0.95 * smoothstep(60, 0, Math.max(wordBox.x0 - x, x - wordBox.x1, wordBox.y0 - y, y - wordBox.y1)) : 1;
       const al = clamp(0.35 + 0.55 * a.depth, 0.3, 0.95) * near;
       c.strokeStyle = rgba('bone', al); c.fillStyle = rgba('bone', al);
       c.lineWidth = 1.3;
@@ -918,6 +992,7 @@ export default class Fuse extends Scene {
           const txt = a.pdoom ? `${a.label} · P(doom) ` : a.label;
           const n = Math.ceil(txt.length * lk);
           c.fillText(txt.slice(0, n), lx + a.lx! * 24, ly + 5);
+          if (masked(ai)) { const tw = c.measureText(txt).width + (a.pdoom ? 40 : 0); maskBox(a.lx! > 0 ? lx + 24 : lx - 24 - tw, ly + 5, tw); }
           if (a.pdoom && n >= txt.length) {
             const w0 = c.measureText(txt).width;
             c.fillStyle = rgba('signal', 0.95 * lk);
@@ -1016,32 +1091,60 @@ export default class Fuse extends Scene {
         c.textAlign = 'left';
       }
     }
-    // the blue note: a scrap of staff, one B-flat on its middle line; the flat and the note in orange
-    const kf = prog(t, this.tBlueNote - 0.06, this.tBlueNote + 0.25, ease.outCubic);
-    if (kf > 0 && this.tBlueNote < this.tEnd) {
-      const sp = 12, sw = 150;
+    // a scrap of staff notating the melisma as it is sung (C4, the octave, then B-flat G F); the blue note's flat
+    // and head in orange
+    const notes = this.notes.filter((n) => n.t >= wb.start - 0.05);
+    const ks = prog(t, wb.start - 0.05, wb.start + 0.25, ease.outCubic);
+    if (ks > 0 && notes.length) {
+      const sp = 12, dx = 46;
       const fx = BLUE_NOTE.x, fy = BLUE_NOTE.y;
+      const shown = notes.filter((n) => t >= n.t - 0.02).length;
+      const sw = 40 + dx * Math.max(1, shown) + 10;
       c.save();
       c.strokeStyle = rgba('bone', 0.7); c.lineWidth = 1.3;
-      for (let i = -2; i <= 2; i++) { c.beginPath(); c.moveTo(fx, fy + i * sp); c.lineTo(fx + sw * kf, fy + i * sp); c.stroke(); }
-      const pop = prog(t, this.tBlueNote, this.tBlueNote + 0.18, (x) => ease.outBack(x, 2.6));
-      if (pop > 0) {
-        c.save(); c.translate(fx + 52, fy + sp * 0.55); c.scale(pop, pop); drawFlat(c, sp * 3.3, rgba('signal', 0.97)); c.restore();
-        c.save(); c.translate(fx + 92, fy); c.rotate(-0.38); c.scale(pop, pop);
-        c.fillStyle = rgba('signal', 0.97); c.beginPath(); c.ellipse(0, 0, sp * 0.72, sp * 0.5, 0, 0, TAU); c.fill();
+      for (let i = -2; i <= 2; i++) { c.beginPath(); c.moveTo(fx, fy + i * sp); c.lineTo(fx + sw * ks, fy + i * sp); c.stroke(); }
+      notes.forEach((n, i) => {
+        const pop = prog(t, n.t - 0.02, n.t + 0.16, (x) => ease.outBack(x, 2.6));
+        if (pop <= 0) return;
+        const { step, flat } = staffStep(n.midi);
+        const x = fx + 40 + i * dx, y = fy + 2 * sp - step * sp / 2;
+        const blue = n.t === this.tBlueNote;
+        const col = blue ? rgba('signal', 0.97) : rgba('bone', 0.92);
+        // ledger lines below / above the staff
+        c.strokeStyle = rgba('bone', 0.7); c.lineWidth = 1.3;
+        for (let st = -2; st >= step; st -= 2) { const ly = fy + 2 * sp - st * sp / 2; c.beginPath(); c.moveTo(x - sp * 1.1, ly); c.lineTo(x + sp * 1.1, ly); c.stroke(); }
+        for (let st = 10; st <= step; st += 2) { const ly = fy + 2 * sp - st * sp / 2; c.beginPath(); c.moveTo(x - sp * 1.1, ly); c.lineTo(x + sp * 1.1, ly); c.stroke(); }
+        if (flat) { c.save(); c.translate(x - 22, y + sp * 0.55); c.scale(pop, pop); drawFlat(c, sp * 3.3, col); c.restore(); }
+        c.save(); c.translate(x, y); c.rotate(-0.38); c.scale(pop, pop);
+        c.fillStyle = col; c.beginPath(); c.ellipse(0, 0, sp * 0.72, sp * 0.5, 0, 0, TAU); c.fill();
         c.restore();
-        c.strokeStyle = rgba('signal', 0.97 * pop); c.lineWidth = 1.6;
-        c.beginPath(); c.moveTo(fx + 92 + sp * 0.62, fy - 2); c.lineTo(fx + 92 + sp * 0.62, fy - sp * 3.4); c.stroke();
-      }
+        // stems: up below the middle line, down from it and above
+        c.strokeStyle = blue ? rgba('signal', 0.97 * pop) : rgba('bone', 0.92 * pop); c.lineWidth = 1.6;
+        c.beginPath();
+        if (step < 4) { c.moveTo(x + sp * 0.62, y - 2); c.lineTo(x + sp * 0.62, y - sp * 3.4); }
+        else { c.moveTo(x - sp * 0.62, y + 2); c.lineTo(x - sp * 0.62, y + sp * 3.4); }
+        c.stroke();
+      });
       const la = prog(t, this.tBlueNote + 0.12, this.tBlueNote + 0.4);
-      c.font = font(F.mono(400), 14); c.letterSpacing = '1px';
-      c.fillStyle = rgba('ash', 0.95 * la);
-      c.fillText('B-flat  ·  the blue note', fx, fy + 3 * sp + 22);
+      if (la > 0) {
+        c.font = font(F.mono(400), 14); c.letterSpacing = '1px';
+        c.fillStyle = rgba('ash', 0.95 * la);
+        c.fillText('B-flat  ·  the blue note', fx, fy + 4 * sp + 26);
+      }
       c.restore();
     }
     c.letterSpacing = '0px';
     c.restore();
   }
+}
+
+/** Staff position of a MIDI note on a treble staff (steps above the bottom line, E4 = 0), spelled with flats. */
+function staffStep(midi: number) {
+  const pc = ((midi % 12) + 12) % 12;
+  const LETTER = [0, 1, 1, 2, 2, 3, 4, 4, 5, 5, 6, 6];      // C D♭ D E♭ E F G♭ G A♭ A B♭ B
+  const FLAT = [0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0];
+  const diat = (Math.floor(midi / 12) - 1) * 7 + LETTER[pc]!;
+  return { step: diat - (4 * 7 + 2), flat: FLAT[pc] === 1 };
 }
 
 /** A flat sign (music), drawn by hand: `h` px tall, origin at the foot of the stem. */

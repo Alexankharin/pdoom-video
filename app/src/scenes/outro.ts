@@ -1,29 +1,36 @@
-// OUTRO — the fuse reaches the end: detonation at P(DOOM) 1.00, then the number keeps going
-// up (overflow: past 1, a log ruler, walls of zeros, ∞), the end card (= ∞ → 8 → 0/0 → NaN), a
-// collapse to the spark, and a lone "↻ Regenerate" that gets clicked: every plate rewinds, the
-// opening plays backwards and parks on the video's first frame, so the end loops into the start.
+// OUTRO — the held "so?" is answered: the spark detonates at P(DOOM) 1.00 (the rest of the line is blown
+// away, "so?" holds on, stretching), then the number keeps going up (overflow: past 1, a log ruler, walls
+// of zeros, ∞), the end card (= ∞ → 8 → 0/0 → NaN¹, on the snare roll and the last downbeat), a collapse
+// to the spark, and a lone "↻ Regenerate" whose click stops the band: every plate rewinds, the opening
+// plays backwards and parks on the video's first frame, so the end loops into the start.
 import * as THREE from 'three';
 import { Scene, type Frame } from '../engine/scene';
 import { FSPass, Layer2D, W, H } from '../engine/gl';
 import { LineBatch } from '../engine/lines';
 import { LIN, rgba } from '../engine/palette';
 import { F, font, layout, textPathCommands } from '../engine/type';
-import { clamp, ease, hash, lerp, mulberry32, prog, smoothstep, TAU } from '../engine/util';
+import { clamp, ease, hash, lerp, mulberry32, prog, smoothstep, springStep, TAU } from '../engine/util';
+import type { Word } from '../engine/lyrics';
 import { sparkHead, sparkParticles } from './_motifs';
 import { drawReadout } from '../engine/hud';
 import OpenScene from './open';
 
+/** The rewind's plates, in video order: public/plates/figNN.jpg = the NN-th key of app/plates.json. */
 const PLATES = [
-  'Sparks', 'Training loss', 'The room', 'Shoggoth', 'A stable run', 'Ascent', 'Paperwork', 'Trajectory',
-  'Paperclips', 'The fuse', 'Architecture', 'Scale', 'Loom', 'What was seen',
+  'The room', 'Shoggoth', 'A thousand thoughts', 'Basilisk', 'Wirehead', 'Paperwork', 'Trajectory', 'Tickets',
+  'The oracle', 'Paperclips', 'Singularity', 'Servant', 'The fuse', 'Masked', 'What was seen', 'Architecture',
+  'The persona', 'The persona (take 2)',
 ];
 
-/** How far into the opening (s) the rewind picks it up. */
-const OPEN_REWIND = 6.5;
-/** Beats (from the outro start) where the overflow and the end card begin. */
-const OVER0 = 4, CARD0 = 20;
+/** How far into the opening (s) the rewind picks it up: the wide shot of the finished construction. */
+const OPEN_REWIND = 15.6;
+/** Beats (from the outro start) where the overflow, the end card and the tail begin. */
+const OVER0 = 4, CARD0 = 12, FADE0 = CARD0 + 10;
 /** The detonation's readout (drawReadout origin and scale); the overflow continues from it. */
 const RX = 170, RY = 700, RK = 5.2;
+/** The held line from mask2, as it is set there (Archivo 900, right-aligned at 1770, baseline 955). */
+const LS = 108, LX1 = 1770, LBASE = 955;
+const WID = [87.5, 100, 112.5, 125];
 
 export default class Outro extends Scene {
   private plateTex: (THREE.Texture | null)[] = [];
@@ -50,7 +57,11 @@ export default class Outro extends Scene {
   private out: THREE.WebGLRenderTarget | null = null;
   /** A private instance of the opening, played backwards at the very end. */
   private open: OpenScene | null = null;
-  private openEnd = 9;
+  private openEnd = 32;
+  /** When the band stops (the click). */
+  private stop = 0;
+  private so!: Word;
+  private rows: Word[][] = [];
 
   override async init() {
     const loader = new THREE.TextureLoader();
@@ -61,13 +72,86 @@ export default class Outro extends Scene {
       })),
     );
     const { audio, lyrics } = this.ctx;
-    // the opening's window, as the timeline cuts it (on the beat at/before "There was a sudden drop")
-    const s0 = lyrics.get('There was a sudden drop').words[0]!.start;
+    // the opening's window, as the timeline cuts it (on the beat at/before "please don't eat me")
+    const s0 = lyrics.get("please don't eat me").words[0]!.start;
     this.openEnd = audio.timeOfBeat(Math.floor(audio.beatAt(s0 + 0.02)));
     this.open = new OpenScene({ ...this.ctx, id: 'open@outro', params: {}, start: 0, end: this.openEnd });
     await this.open.init();
     this.beats = audio.beats.filter((b) => b >= this.ctx.start - 0.05 && b < this.ctx.end);
     if (this.beats.length === 0 || this.beats[0]! > this.ctx.start + 0.05) this.beats.unshift(this.ctx.start);
+    // the band stops just after the last downbeat (the held chord releases): the click lands there
+    const b0 = this.tb(FADE0 + 1.5), ref = audio.env('bass', b0);
+    this.stop = this.tb(FADE0 + 2.25);
+    for (let t = b0; t < this.ctx.end - 0.5; t += 0.01) if (audio.env('bass', t) < 0.75 * ref) { this.stop = t; break; }
+    // the held line, laid out as mask2 sets it (two balanced rows, right-aligned)
+    const line = lyrics.get('Or have you learned to tell us so', 1);
+    this.so = line.words[line.words.length - 1]!;
+    const c = this.ui.ctx, sp = LS * 0.26;
+    const wd = line.words.map((w) => { c.font = font(F.archivo(WID[w === this.so ? 2 : 0]!, 900), LS); return c.measureText(w.w).width; });
+    const total = wd.reduce((x, y) => x + y, 0) + sp * (wd.length - 1);
+    let brk = wd.length, best = Infinity, acc = 0;
+    for (let k = 1; k < wd.length; k++) { acc += wd[k - 1]! + (k > 1 ? sp : 0); const d = Math.abs(acc - (total - acc - sp)); if (d < best) { best = d; brk = k; } }
+    this.rows = [line.words.slice(0, brk), line.words.slice(brk)];
+  }
+
+  /** "so?"'s width at t: Archivo 112.5 → 125 on the first beat, then stretched one notch per beat. */
+  private soWidth(t: number) {
+    const c = this.ui.ctx;
+    c.font = font(F.archivo(125, 900), LS); const w125 = c.measureText(this.so.w).width;
+    c.font = font(F.archivo(112.5, 900), LS); const w112 = c.measureText(this.so.w).width;
+    let w = lerp(w112, w125, springStep(t - this.tb(0), 3.2, 0.45));
+    for (let i = 1; i < OVER0; i++) w += w125 * 0.16 * springStep(t - this.tb(i), 3.2, 0.45);
+    return { w, sx: w / w125, w125 };
+  }
+
+  /**
+   * The held line in the blast: the spark goes off at frame centre on the downbeat; the glyphs of "Or have
+   * you learned to tell us" are blown outward (spinning, heating, burning out), while "so?" — still being
+   * sung — holds on at its place, stretching a notch wider on every beat and flinching as each ring passes.
+   */
+  private drawHeldLine(c: CanvasRenderingContext2D, t: number) {
+    const age = t - this.tb(0), sp = LS * 0.26;
+    const so = this.soWidth(t);
+    const base = LBASE;
+    this.rows.forEach((row, ri) => {
+      const fams = row.map((w) => (w === this.so ? F.archivo(125, 900) : F.archivo(87.5, 900)));
+      const ws = row.map((w, i) => { if (w === this.so) return so.w; c.font = font(fams[i]!, LS); return c.measureText(w.w).width; });
+      const rw = ws.reduce((x, y) => x + y, 0) + sp * (row.length - 1);
+      let x = LX1 - rw;
+      const y = base - (this.rows.length - 1 - ri) * LS;
+      row.forEach((w, wi) => {
+        c.font = font(fams[wi]!, LS); c.textAlign = 'left'; c.textBaseline = 'alphabetic';
+        if (w === this.so) {
+          // flinch as each shockwave ring passes over it
+          let jolt = 0;
+          for (let k = 0; k < OVER0; k++) { const ak = t - this.tb(k) - 0.28; if (ak > 0) jolt += Math.exp(-ak / 0.07) * Math.sin(ak * 60) * (ak < 0.4 ? 1 : 0); }
+          c.save();
+          c.translate(x + jolt * 10, y - jolt * 4); c.scale(so.sx, 1);
+          c.fillStyle = rgba('signal');
+          c.fillText(w.w, 0, 0);
+          c.restore();
+        } else {
+          const gl = layout(w.w, fams[wi]!, LS).glyphs;
+          for (const g of gl) {
+            const gx = x + g.x + LS * 0.25, gy = y - LS * 0.35;
+            const dx = gx - W / 2, dy = gy - H / 2, d = Math.hypot(dx, dy) || 1;
+            const h = hash(ri * 31 + wi * 7 + g.x, 3);
+            const D = (420 + 800 * h) * (1 - Math.exp(-Math.max(0, age) / (0.3 + 0.3 * h)));
+            const rot = (h - 0.5) * 7 * (1 - Math.exp(-Math.max(0, age) / 0.35));
+            const burn = clamp(age / (0.7 + 0.5 * h));
+            if (burn >= 1) continue;
+            c.save();
+            c.translate(gx + (dx / d) * D, gy + (dy / d) * D - 120 * burn * burn);
+            c.rotate(rot); c.scale(1 - 0.4 * burn, 1 - 0.4 * burn);
+            c.globalAlpha = 1 - burn * burn;
+            c.fillStyle = age < 0.03 ? rgba('bone', 0.95) : mixHex(rgba('ember'), rgba('graphite'), burn);
+            c.fillText(g.ch, -LS * 0.25, LS * 0.35);
+            c.restore();
+          }
+        }
+        x += ws[wi]! + sp;
+      });
+    });
   }
 
   /** Beat index (fractional) relative to the outro start. */
@@ -78,7 +162,12 @@ export default class Outro extends Scene {
     const next = b[i + 1] ?? b[i]! + 0.4644;
     return i + clamp((t - b[i]!) / (next - b[i]!));
   }
-  private tb(i: number) { const b = this.beats; return i < b.length ? b[i]! : b[b.length - 1]! + (i - b.length + 1) * 0.4644; }
+  /** Time of (fractional) beat i from the outro start. */
+  private tb(i: number) {
+    const b = this.beats, n = b.length, j = Math.floor(i);
+    if (j + 1 < n) return lerp(b[j]!, b[j + 1]!, i - j);
+    return b[n - 1]! + (i - n + 1) * (b[n - 1]! - b[n - 2]!);
+  }
 
   private drawPlaceholder(i: number) {
     const L = this.placeholder; L.clear(i % 2 ? '#0d0d0e' : '#141415');
@@ -91,15 +180,15 @@ export default class Outro extends Scene {
   }
 
   /**
-   * The overflow, 4 bars after the detonation: P(doom) keeps being upped.
-   * Bar 1: the readout's bar runs past 1.0 (the end cap snaps) · bar 2: a log ruler flies by
-   * (π, 10, 42, 1,000) · bar 3: walls of zeros (1e9, 1e30, 1e100, 1e1000) · bar 4: the spark
-   * traces ∞, then a 16th-note recap of the climb. `s` = beats since the overflow started.
+   * The overflow, 2 bars after the detonation: P(doom) keeps being upped, one value per beat, a new
+   * instrument every two beats. The readout's bar runs past 1.0 (the end cap snaps: 1.01, 2.00) · a log
+   * ruler flies by (π, 42) · walls of zeros (1e30, 1e1000) · the spark traces ∞. `s` = beats since the
+   * overflow started.
    */
   private overflow(f: Frame, s: number, post: Record<string, any>) {
     const { renderer, comp } = this.ctx;
     const t = f.t;
-    const bar = Math.floor(s / 4), step = Math.floor(s) % 4, local = s - Math.floor(s);
+    const bar = Math.floor(s / 2), step = Math.floor(s) % 2, local = s - Math.floor(s);
     const hit = Math.pow(1 - clamp(local / 0.35), 3); // decays over each beat's first third
     const lb = this.lines; lb.clear();
     const L = this.ui; L.clear(); const c = L.ctx;
@@ -110,7 +199,7 @@ export default class Outro extends Scene {
 
     if (bar === 0) {
       // the readout from the detonation: the bar runs past its end cap, the camera backs off
-      const vals = [1.01, 1.1, 1.5, 2.0];
+      const vals = [1.01, 2.0];
       const prev = step === 0 ? 1 : vals[step - 1]!, cur = vals[step]!;
       const v = lerp(prev, cur, ease.outExpo(clamp(local / 0.3)));
       const bw = 220 * RK;
@@ -145,16 +234,16 @@ export default class Outro extends Scene {
       c.font = font(F.mono(500), 7 * RK); c.fillStyle = rgba('ash', 0.9 - 0.5 * snap);
       c.fillText('max', RX + bw - 7 * RK, by - 10 * RK);
       c.restore();
-      if (s >= 1) {
-        const typed = Math.floor(prog(s, 1, 2.2) * 60);
+      if (s >= 0.6) {
+        const typed = Math.floor(prog(s, 0.6, 1.5) * 60);
         c.font = font(F.mono(400), 22); c.fillStyle = rgba('ash', 0.95);
         // Ω as U+2126 (the ohm sign): Plex Mono has it, not the Greek Ω (which would fall back to a system font)
         c.fillText('¹ Kolmogorov (1933): P(\u2126) = 1.  Deprecated.'.slice(0, typed), RX, 990);
       }
     } else if (bar === 1) {
       // a log ruler flies past under a marker; the number, huge, top left
-      const vals = [3.14, 10, 42, 1000], texts = ['3.14', '10.00', '42.00', '1,000.00'];
-      const notes = ['≈ π (irrational)', 'an order of magnitude', 'the answer (question pending)', 'units: dooms'];
+      const vals = [3.14, 42], texts = ['3.14', '42.00'];
+      const notes = ['≈ π (irrational)', 'the answer (question pending)'];
       const prev = step === 0 ? 2 : vals[step - 1]!, cur = vals[step]!;
       const e = ease.outExpo(clamp(local / 0.4));
       const lv = lerp(Math.log10(prev), Math.log10(cur), e);
@@ -194,8 +283,8 @@ export default class Outro extends Scene {
       c.fillText(notes[step]!, XM + 24, YR - 40);
     } else if (bar === 2) {
       // walls of zeros: 1 followed by N zeros, typed out and fitted to the frame
-      const Ns = [9, 30, 100, 1000], sci = ['1e9', '1e30', '1e100', '1e1000'];
-      const notes = ['(a billion)', '(one E thirty — see above)', '(a googol)', '(does not fit)'];
+      const Ns = [30, 1000], sci = ['1e30', '1e1000'];
+      const notes = ['(one E thirty — see above)', '(does not fit)'];
       const N = Ns[step]!;
       // digit groups of three from the right ("1 000 000 000"), wrapped between groups
       const digits = '1' + '0'.repeat(N);
@@ -248,12 +337,12 @@ export default class Outro extends Scene {
       c.fillText(notes[step]!, W - 120, 1000 - 90);
       c.textAlign = 'left';
     } else {
-      // the spark traces ∞; the last two beats flick back through the whole climb
-      const s3 = s - 12;
+      // the spark traces ∞ (two beats)
+      const s3 = s - 6;
       const cx = W / 2, cy = H / 2 + 30, A = 720;
       const lem = (u: number) => { const d = 1 + Math.sin(u) ** 2; return { x: cx + (A * Math.cos(u)) / d, y: cy + (A * Math.sin(u) * Math.cos(u)) / d }; };
       const uOf = (b: number) => TAU * 0.25 + 1.5 * TAU * ease.inOutCubic(clamp(b / 2)) + TAU * Math.max(0, b - 2);
-      if (s3 < 2) {
+      {
         const u = uOf(s3), trail = Math.min(u - TAU * 0.25, TAU * 0.95);
         const n = 260;
         for (let i = 0; i < n; i++) {
@@ -262,26 +351,13 @@ export default class Outro extends Scene {
           lb.seg2(p.x, p.y, q.x, q.y, 5 * fade + 1, sig2, fade);
         }
         const h = lem(u);
-        sparkParticles(lb, t, (tt) => { const b = this.rb(tt) - OVER0 - 12; return b >= 0 && b < 2 ? lem(uOf(b)) : null; }, { rate: 90, intensity: 1, speed: 220 });
+        sparkParticles(lb, t, (tt) => { const b = this.rb(tt) - OVER0 - 6; return b >= 0 && b < 2 ? lem(uOf(b)) : null; }, { rate: 90, intensity: 1, speed: 220 });
         sparkHead(lb, h.x, h.y, t, 1.3, 1);
         c.font = font(F.mono(500), 30); c.letterSpacing = '9px'; c.fillStyle = rgba('signal');
         c.fillText('P(DOOM) =', cx - A, cy - 300);
         c.letterSpacing = '0px';
         c.font = font(F.mono(400), 22); c.fillStyle = rgba('ash', clamp((s3 - 0.5) * 2));
         c.fillText('¹ upper bound removed', cx - A, cy + 330);
-      } else {
-        // 16th notes: the climb replayed, landing on ∞
-        const seq = ['1.00', '1.50', '3.14', '42.00', '1,000', '1e30', '1e100', '∞'];
-        const i = Math.min(seq.length - 1, Math.floor((s3 - 2) * 4));
-        const size = i === seq.length - 1 ? 520 : 300 + hash(i, 5) * 160;
-        c.save();
-        c.font = font(F.mono(400), size);
-        c.fillStyle = i % 2 ? rgba('signal') : rgba('bone');
-        c.textAlign = 'center'; c.textBaseline = 'middle';
-        c.translate(W / 2 + (hash(i, 2) - 0.5) * 300, H / 2 + (hash(i, 3) - 0.5) * 160);
-        c.fillText(seq[i]!, 0, 0);
-        c.restore();
-        post.flash = 0;
       }
     }
     lb.render(renderer, this.out!);
@@ -294,7 +370,7 @@ export default class Outro extends Scene {
    * guides, then the spark traces the outlines of P(doom) (beat 3) and fills them; "=" slams in
    * (beat 4); ∞ is traced (a callback to the overflow) and numbered like an equation (1). Then the
    * value is simplified, one beat at a time: the ∞ topples a quarter turn into an 8 (beat 6), the 8
-   * divides into 0/0 (beat 7), and on beat 8 — where the drums stop — 0/0 evaluates to NaN¹,
+   * divides into 0/0 (beat 7), and on beat 8 — the last downbeat of the drums, after the snare roll — 0/0 evaluates to NaN¹,
    * footnoted. `k` = beats since the card started (≥ 10: final state).
    */
   private geom: CardGeom | null = null;
@@ -630,11 +706,10 @@ export default class Outro extends Scene {
     const { renderer, comp } = this.ctx;
     const t = f.t;
     const rb = this.rb(t);
-    const nBeats = this.beats.length;
-    // phases (in beats from the outro start)
-    // 36 beats: bar 1 detonation, 4 bars of overflow, 10 beats of end card (0/0 = NaN lands where the
-    // drums stop), then ~6 beats of decay: collapse, regenerate, and the rewind back to the first frame.
-    const FADE0 = Math.min(CARD0 + 10, nBeats - 6);
+    // phases (in beats from the outro start; 26 beats in all): bar 1 detonation (the held "so?"), 2 bars
+    // of overflow, 10 beats of end card (0/0 = NaN lands on the last downbeat of the drums, after the snare
+    // roll; "so?" ends under it), then the tail: collapse, regenerate — clicked where the band stops —
+    // and the rewind back to the first frame.
     const post: Record<string, any> = { bloom: 0.8, hud: 1 };
 
     renderer.setRenderTarget(out);
@@ -684,8 +759,12 @@ export default class Outro extends Scene {
         c.globalAlpha = show;
         const k = RK * (1 + 0.04 * f.a.kick);
         const jx = Math.sin(t * 61) * 6 * Math.pow(0.5, age / 0.5), jy = Math.cos(t * 47) * 6 * Math.pow(0.5, age / 0.5);
-        drawReadout(c, RX + jx, RY + jy, 1, { scale: k, text: '1.00', digits: rgba('bone', 1), label: rgba('signal', 1) });
+        // the last value (hook 7's 0.99) rolls the final digits and lands on 1.00
+        const roll = ['0.990', '0.996', '0.999', '1.00'][Math.min(3, Math.floor(age / 0.07))]!;
+        drawReadout(c, RX + jx, RY + jy, roll === '1.00' ? 1 : 0.999, { scale: k, text: roll, digits: rgba('bone', 1), label: rgba('signal', 1) });
       }
+      c.globalAlpha = 1;
+      this.drawHeldLine(c, t);
       comp.draw(renderer, L.upload(), out);
     }
 
@@ -708,20 +787,21 @@ export default class Outro extends Scene {
 
     // ---------------------------------------------------------------- collapse, regenerate, rewind to the top
     if (rb >= FADE0) {
-      const k = rb - FADE0; // beats into the tail (~6 beats of decay after the drums stop)
-      // click on beat 3; the plates rewind (accelerating) until R1; then the opening itself plays
-      // backwards, decelerating, and parks on its first frame — the video's first frame — at R2
-      const CLICK = 3, R0 = CLICK + 0.12, R1 = 4.3, R2 = 6.0;
+      const k = rb - FADE0; // beats into the tail (NaN¹ has held for two beats)
+      // the click lands where the band stops; the plates rewind (accelerating, in the silence) until R1;
+      // then the opening itself plays backwards, braking, and parks on its first frame at R2
+      const CLICK = this.rb(this.stop) - FADE0;
+      const R0 = this.stop + 0.04, R1 = this.stop + 0.44, R2 = this.ctx.end - 0.035;
       const lb = this.lines; lb.clear();
       const cx = W / 2, cy = H / 2 - 40;
       const L = this.ui; L.clear(); const c = L.ctx;
       // the frame closes back in around the chat window (it is the opening's frame too)
-      post.frame = prog(k, 0.6, 1.5, ease.inOutCubic);
+      post.frame = prog(k, 0.3, 1.1, ease.inOutCubic);
 
-      if (k < R0) {
-        if (k < 0.7) {
+      if (t < R0) {
+        if (k < 0.5) {
           // the end card implodes into the spark
-          const q = ease.inExpo(clamp(k / 0.6));
+          const q = ease.inExpo(clamp(k / 0.45));
           c.save();
           c.translate(cx, cy); c.scale(1 - q, 1 - q); c.translate(-cx, -cy);
           c.globalAlpha = 1 - q * 0.6;
@@ -730,14 +810,14 @@ export default class Outro extends Scene {
           post.bloom = 0.25; post.halation = 0;
         }
         const head = (tt: number) => ({ x: cx + Math.sin(tt * 1.3) * 6, y: cy + Math.cos(tt * 1.7) * 4 });
-        const alive = (tt: number) => this.rb(tt) >= FADE0 + 0.35;
-        const glowAt = (kk: number) => smoothstep(0.35, 0.65, kk) * (1 - smoothstep(CLICK, CLICK + 0.12, kk));
+        const alive = (tt: number) => this.rb(tt) >= FADE0 + 0.25;
+        const glowAt = (kk: number) => smoothstep(0.25, 0.5, kk) * (1 - smoothstep(CLICK, CLICK + 0.12, kk));
         const glow = glowAt(k);
         sparkParticles(lb, t, (tt) => (alive(tt) ? head(tt) : null), { rate: (tb) => 50 * glowAt(this.rb(tb) - FADE0), rateMax: 50, intensity: glow, speed: 150 });
         if (glow > 0.01) sparkHead(lb, head(t).x, head(t).y, t, 1.2, glow);
         lb.render(renderer, out);
         // the button and the cursor
-        const bIn = smoothstep(0.9, 1.4, k);
+        const bIn = smoothstep(0.6, 0.95, k);
         if (bIn > 0) {
           const bw = 420, bh = 88, bx = cx - bw / 2, by = cy + 170;
           const pressed = k >= CLICK;
@@ -753,18 +833,17 @@ export default class Outro extends Scene {
           c.textAlign = 'left'; c.textBaseline = 'alphabetic';
           c.font = font(F.mono(400), 16); c.fillStyle = rgba('ash', 0.8);
           c.fillText('this response could not be verified', bx + 34, by + bh + 34);
-          // cursor glides in, hovers, clicks on the beat
-          const m = prog(k, 1.4, CLICK - 0.15, ease.inOutCubic);
+          // cursor glides in, hovers, clicks where the band stops
+          const m = prog(k, 0.8, CLICK - 0.2, ease.inOutCubic);
           const px = lerp(W * 0.8, cx + 60, m), py = lerp(H * 0.9, by + bh / 2 + 10, m);
           drawCursor(c, px, py, pressed ? 0.88 : 1);
         }
         comp.draw(renderer, L.upload(), out);
         post.flash = k >= CLICK ? 0.8 * (1 - clamp((k - CLICK) / 0.12)) : 0;
-      } else if (k < R1) {
-        // rewind: the plates flash past backwards, faster and faster (the last one before the
-        // opening is `loss`; the opening itself is live)
-        const n = PLATES.length - 1;
-        const idx = n - Math.min(n - 1, Math.floor(ease.inQuad(prog(k, R0, R1)) * n));
+      } else if (t < R1) {
+        // rewind: the plates flash past backwards, faster and faster (the opening itself is live)
+        const n = PLATES.length;
+        const idx = n - 1 - Math.min(n - 1, Math.floor(Math.pow(prog(t, R0, R1), 1.4) * n));
         const u = this.plate.u;
         u.tex!.value = this.plateTex[idx] ?? this.drawPlaceholder(idx);
         u.zoom!.value = 1.0; u.rot!.value = 0; u.duo!.value = idx % 2; u.kick!.value = 1; u.alpha!.value = 1;
@@ -773,10 +852,10 @@ export default class Outro extends Scene {
         post.ca = 6; post.grain = 0.12;
       } else {
         // the opening, backwards, braking to a stop on its first frame
-        const tau = Math.max(0, OPEN_REWIND * Math.pow(1 - prog(k, R1, R2), 2));
+        const tau = Math.max(0, OPEN_REWIND * Math.pow(1 - prog(t, R1, R2), 2.2));
         const ov = this.renderOpen(tau, out);
         Object.assign(post, ov ?? {});
-        const brake = 1 - prog(k, R1, R1 + 0.8);
+        const brake = 1 - prog(t, R1, R1 + 0.3);
         post.ca = (ov?.ca ?? 1.2) + 5 * brake; post.grain = lerp(0.05, 0.1, brake);
         post.frame = 1; post.hud = 1;
       }

@@ -18,6 +18,8 @@ The video is a web app (`app/`, TypeScript + three.js, run with bun + Vite) that
 
 - `lyrics` (`src/engine/lyrics.ts`): `lines[]` with `text,start,end,words[]`, each word `{w,start,end}` (word-level, aligned to the vocal). Find lines by content, never hard-code times: `const l = this.ctx.lyrics.get('sudden drop')` → `l.words[3].start`. Helpers: `Lyrics.wordProgress(word, t)` (0..1 sung progress), `Lyrics.lineCharProgress(line, t)` (chars sung so far — for per-glyph wipes), `lyrics.findWords('P(doom)')`.
 - `audio` (`src/engine/audio.ts`): `beats[]`, `downbeats[]`, `sections[]`, `beatAt(t)` (continuous beat index), `barAt(t)`, `timeOfBeat(i)`, `nearestBeat(t)`, `events('kick'|'snare'|'hat'|'vocal', t0, t1)`, `env(name, t)` for `rms|low|mid|high|vocal|drums|bass|other` (0..1), `hit(kind, t, halfLife)` decaying pulses.
+- The tempo is not constant (the song accelerates from about 132 to 140.6 BPM): `beats[]` follow the tempo curve and the beat functions interpolate them. Never compute with a fixed period (`60 / audio.bpm`); `bpm` is only the song mean.
+- Lines that are sung twice (the second pass of the bridge, verse 6 and the final chorus) are found with `lyrics.get(q, nth)`; timeline entries of the second pass pass `params.nth = 1` and `params.take = 2`.
 - Every `Frame` already carries `f.a` = `{rms,low,mid,high,vocal,drums,bass,other,kick,snare,hat,vonset}` and `f.beat,f.bar,f.beatPhase,f.barPhase`.
 
 ## Writing a scene

@@ -1,10 +1,13 @@
 // FIG. 7 `bureau` — "Paperwork". Inverted palette: bone paper, ink, orange accents.
-// One long printed document seen by a restless camera:
-//   A. Form 7-B (safety evaluation): the lyric is typewritten into the fields; SAFE ENOUGH stamp slams on "reckoned".
+// One printed document seen by a restless camera; two timeline entries play different pages of it (param `part`):
+//   part 'mlp' (verse 3):
 //   B. Annex B (MLP schematic): the pulse sweeps forward on "Forward M-L-P", back on "backward" (typeset mirrored,
 //      right to left), and "repeat" stutters the last beat x3 (the annex is re-rendered at remapped time).
 //   C. Appendix C (the von Neumann architecture, a textbook figure): struck through in orange marker on "obsolete",
-//      then the page tears in two and falls away to black.
+//      then the page tears in two and falls away to black (leftturn draws itself out of the black).
+//   part 'form' (end of chorus 3):
+//   A. Form 7-B (safety evaluation): the lyric is typewritten into the fields; SAFE ENOUGH stamp slams on "reckoned",
+//      the evaluator signs on the beat, FILED lands on the next, and the camera whips off the sheet's edge into the dark.
 // Rendering: all ink is drawn on one Canvas2D layer as channel-coded coverage (R = typewriter/pen ink,
 // G = printed ink, B = orange ink), composited onto procedural paper by a shader (fibres, ink grain, stamp texture),
 // then a tear pass cuts the page into pieces.
@@ -29,6 +32,8 @@ const ORANGE = (a = 1) => `rgba(0,0,255,${a})`;
 const A = { x: 0, y: 0 };
 const B = { x: 0, y: 1500 };
 const C = { x: 0, y: 3000 };
+/** the form's sheet (page px, around A); beyond it, the desk */
+const SHEET = { x0: -1180, y0: -820, x1: 1240, y1: 1000 };
 
 const PAPER_FRAG = /* glsl */ `
 uniform sampler2D inkTex;
@@ -37,6 +42,7 @@ uniform vec2 blurV;                        // motion blur (screen px)
 uniform vec4 st0; uniform vec4 st0b;       // stamp 0: centre.xy, half.xy | angle, strength, seed, -
 uniform vec4 st1; uniform vec4 st1b;
 uniform float zoom;
+uniform vec4 sheet;                        // sheet bounds (page px); z < x: endless paper
 
 float fibres(vec2 p, float cs) {
   float acc = 0.0;
@@ -133,6 +139,24 @@ void main() {
     col = mix(col, C_INK * 0.6, inside);
     col *= 1.0 - 0.18 * (1.0 - smoothstep(0.0, 6.0, hd)) * (1.0 - inside);
   }
+  // the sheet's edge (form part): beyond it the dark desk; smeared along the whip
+  if (sheet.z > sheet.x) {
+    float cov = 0.0, shd = 0.0;
+    const int NS = 24;
+    for (int i = 0; i < NS; i++) {
+      float k = bl > 1.0 ? (float(i) + 0.5) / float(NS) - 0.5 : 0.0;
+      vec2 s2 = sp + blurV * k;
+      vec2 q = vec2(dot(camA, vec3(s2, 1.0)), dot(camB, vec3(s2, 1.0)));
+      vec2 dd = max(sheet.xy - q, q - sheet.zw);
+      float d = max(dd.x, dd.y);
+      float w = max(fwidth(pp.x), 1e-3);
+      cov += 1.0 - smoothstep(-w, w, d);
+      shd += 1.0 - smoothstep(0.0, 90.0, d - 8.0);
+    }
+    cov /= float(NS); shd /= float(NS);
+    vec3 desk = C_INK * (0.55 - 0.35 * shd);
+    col = mix(desk, col, cov);
+  }
   // slight vignette on the sheet
   vec2 dc = vUv - 0.5;
   col *= 1.0 - 0.16 * pow(length(dc * vec2(1.0, 0.85)) * 1.5, 2.6);
@@ -210,7 +234,7 @@ export default class Bureau extends Scene {
   pageRT = makeRT();
   paper = new FSPass(PAPER_FRAG, {
     inkTex: { value: null }, camA: { value: new THREE.Vector3() }, camB: { value: new THREE.Vector3() },
-    blurV: { value: new THREE.Vector2() }, zoom: { value: 1 },
+    blurV: { value: new THREE.Vector2() }, zoom: { value: 1 }, sheet: { value: new THREE.Vector4(0, 0, -1, -1) },
     st0: { value: new THREE.Vector4() }, st0b: { value: new THREE.Vector4() },
     st1: { value: new THREE.Vector4() }, st1b: { value: new THREE.Vector4() },
   });
@@ -229,9 +253,13 @@ export default class Bureau extends Scene {
   syl: [number, number][] = [];
   beatLen = 0.4645;
 
-  // key times
-  T0 = 0; tCR = 0; tStamp = 0; tSig = 0; tFiled = 0; tWhipB = 0; tFwd = 0; tBack0 = 0; tBack1 = 0; tRep0 = 0; tRep1 = 0;
-  tNow = 0; tReveal = 0; tPunch = 0; tObs = 0; tStrike2 = 0; tTear = 0; tEnd = 0;
+  part: 'mlp' | 'form' = 'mlp';
+
+  // key times (the other part's stay at +inf: their pulses never fire)
+  T0 = 0; tEnd = 0;
+  tCR = Infinity; tStamp = Infinity; tSig = Infinity; tFiled = Infinity; tExit = Infinity;
+  tFwd = Infinity; tBack0 = Infinity; tBack1 = Infinity; tRep0 = Infinity; tRep1 = Infinity;
+  tNow = Infinity; tReveal = Infinity; tPunch = Infinity; tObs = Infinity; tStrike2 = Infinity; tTear = Infinity;
 
   findings: TypeChar[] = [];
   conclusion: TypeChar[] = [];
@@ -249,48 +277,63 @@ export default class Bureau extends Scene {
     this.pdoom = new PDoom(lyrics);
 
     this.ink.texture.colorSpace = THREE.NoColorSpace;
+    this.part = this.ctx.params.part === 'form' ? 'form' : 'mlp';
     const find = (l: Line, q: string, from = 0) => l.words.slice(from).find((w) => norm(w.w).startsWith(norm(q))) ?? l.words[Math.min(from, l.words.length - 1)]!;
-    this.L1 = lyrics.get('safe enough');
-    this.L2 = lyrics.get('Forward MLP');
-    this.L3 = lyrics.get('Neumann');
-    this.wEnough = find(this.L1, 'enough');
-    this.wWe = find(this.L1, 'we', 4);
-    this.wReck = find(this.L1, 'reckon');
-    this.wFwd = find(this.L2, 'forward');
-    this.wMLP = find(this.L2, 'mlp');
-    this.wBack = find(this.L2, 'backward');
-    this.wRep = find(this.L2, 'repeat');
-    this.wNow = this.L3.words[0]!;
-    this.wVon = find(this.L3, 'von');
-    this.wNeu = find(this.L3, 'neumann');
-    this.wObs = find(this.L3, 'obsolete');
-    const m = this.wMLP;
-    this.syl = m.syl && m.syl.length === 3 ? m.syl.map((s) => [s[0], s[1]] as [number, number]) : [0, 1, 2].map((i) => [lerp(m.start, m.end, i / 3), lerp(m.start, m.end, (i + 1) / 3)] as [number, number]);
-
     const au = audio;
     const b0 = Math.floor(au.beatAt(this.ctx.start));
     this.beatLen = au.timeOfBeat(b0 + 1) - au.timeOfBeat(b0);
-    const nextDown = (t: number) => au.downbeats.find((d) => d >= t - 1e-3) ?? t;
     const nearestBeat = (t: number) => au.timeOfBeat(Math.round(au.beatAt(t)));
+    const beatAfter = (t: number) => au.timeOfBeat(Math.ceil(au.beatAt(t) - 1e-6));
+    /** The beat nearest to t inside [a, b] (else t clamped). */
+    const beatIn = (t: number, a: number, b: number) => {
+      const n = nearestBeat(t);
+      if (n >= a && n <= b) return n;
+      const c = beatAfter(a);
+      return c <= b ? c : clamp(t, a, b);
+    };
     this.T0 = this.ctx.start;
     this.tEnd = this.ctx.end;
-    this.tCR = this.wWe.start - 0.03;
-    this.tStamp = this.wReck.start;
-    this.tFwd = this.wFwd.start;
-    this.tFiled = nextDown(this.tStamp + 1.4);
-    if (this.tFiled > this.tFwd - 0.7) this.tFiled = this.tStamp + 1.6;
-    this.tSig = nearestBeat(lerp(this.tStamp, this.tFiled, 0.5));
-    if (this.tSig < this.tStamp + 0.4 || this.tSig > this.tFiled - 0.5) this.tSig = lerp(this.tStamp, this.tFiled, 0.5);
-    this.tWhipB = this.tFwd - Math.min(0.46, this.beatLen);
-    this.tBack0 = this.wBack.start; this.tBack1 = this.wBack.end;
-    this.tRep0 = this.wRep.start; this.tRep1 = Math.max(this.wRep.end, this.tRep0 + 0.45);
-    this.tNow = Math.min(this.wNow.start, this.L3.start);
-    this.tObs = this.wObs.start;
-    this.tStrike2 = this.tObs + Math.min(0.22, this.beatLen * 0.5);
-    this.tTear = clamp(nextDown(this.tObs + 0.3), this.tObs + 0.3, this.tEnd - 0.4);
-    this.tReveal = au.downbeats.find((d) => d > this.wVon.end - 0.15 && d < this.tObs - 0.6) ?? lerp(this.wNeu.start, this.tObs, 0.2);
-    this.tPunch = nearestBeat(lerp(this.tReveal, this.tObs, 0.5));
 
+    if (this.part === 'form') {
+      this.L1 = lyrics.get('safe enough');
+      this.wEnough = find(this.L1, 'enough');
+      this.wWe = find(this.L1, 'we', 4);
+      this.wReck = find(this.L1, 'reckon');
+      this.tCR = this.wWe.start - 0.03;
+      this.tStamp = this.wReck.start;
+      // after the stamp: the signature on a beat, FILED on the next, then the whip off the sheet
+      this.tSig = beatIn(this.tStamp + 0.85, this.tStamp + 0.55, this.tEnd - 1.0);
+      this.tFiled = beatIn(this.tSig + this.beatLen, this.tSig + 0.3, this.tEnd - 0.4);
+      this.tExit = Math.max(this.tFiled + 0.16, lerp(this.tFiled, this.tEnd, 0.42));
+    } else {
+      this.L2 = lyrics.get('Forward MLP');
+      this.L3 = lyrics.get('Neumann');
+      this.wFwd = find(this.L2, 'forward');
+      this.wMLP = find(this.L2, 'mlp');
+      this.wBack = find(this.L2, 'backward');
+      this.wRep = find(this.L2, 'repeat');
+      this.wNow = this.L3.words[0]!;
+      this.wVon = find(this.L3, 'von');
+      this.wNeu = find(this.L3, 'neumann');
+      this.wObs = find(this.L3, 'obsolete');
+      const m = this.wMLP;
+      this.syl = m.syl && m.syl.length === 3 ? m.syl.map((s) => [s[0], s[1]] as [number, number]) : [0, 1, 2].map((i) => [lerp(m.start, m.end, i / 3), lerp(m.start, m.end, (i + 1) / 3)] as [number, number]);
+      this.tFwd = this.wFwd.start;
+      this.tBack0 = this.wBack.start; this.tBack1 = this.wBack.end;
+      this.tRep0 = this.wRep.start; this.tRep1 = Math.max(this.wRep.end, this.tRep0 + 0.45);
+      this.tNow = Math.min(this.wNow.start, this.L3.start);
+      this.tObs = this.wObs.start;
+      // the second strike on the next beat (the downbeat, here), the rip on the beat after that
+      this.tStrike2 = beatIn(this.tObs + 0.22, this.tObs + 0.12, this.tObs + 0.35);
+      this.tTear = beatIn(this.tObs + 0.6, this.tStrike2 + 0.2, this.tEnd - 0.36);
+      // the figure is revealed on the beat that lands "Neumann's", the punch-in on a beat between it and "obsolete"
+      this.tReveal = beatIn(this.wNeu.start, this.wVon.end - 0.2, this.tObs - 0.6);
+      this.tPunch = beatIn(lerp(this.tReveal, this.tObs, 0.5), this.tReveal + 0.3, this.tObs - 0.25);
+    }
+    if (this.part === 'form') this.initForm(); else this.initMlp();
+  }
+
+  initForm() {
     // ---- typewriter layout: each word is typed at a natural rate from its start (done by its end)
     const adv = this.typeSize * 0.6;
     const mk = (words: Word[], x0: number, y0: number, seed: number) => {
@@ -325,6 +368,9 @@ export default class Bureau extends Scene {
     }
 
     this.sig = strokeText('We', 'script', 120);
+  }
+
+  initMlp() {
     this.obsHand = strokeText('obsolete', 'hscript', 124, 1);
     // hand-writing of "obsolete": starts with the word and must be done before the tear
     const wEnd = Math.min(this.wObs.end, this.tTear + 0.02);
@@ -380,12 +426,23 @@ export default class Bureau extends Scene {
   /** Is there a camera cut in (t - dt, t]? (no motion blur across cuts) */
   cutBetween(t0: number, t1: number) {
     if (t1 > this.tRep0 && t0 < this.tRep1 + 0.02) return true; // no blur during the stutter
-    const cuts = [this.tStamp, this.tNow, this.tRep0, this.tRep0 + (this.tRep1 - this.tRep0) / 3, this.tRep0 + (2 * (this.tRep1 - this.tRep0)) / 3, this.tRep1];
+    const cuts = [this.T0, this.tStamp, this.tNow, this.tRep0, this.tRep0 + (this.tRep1 - this.tRep0) / 3, this.tRep0 + (2 * (this.tRep1 - this.tRep0)) / 3, this.tRep1];
     return cuts.some((c) => c > t0 && c <= t1);
   }
 
   camAt(t: number): Cam {
-    // --- A: the form
+    if (this.part === 'form') return this.camA(t);
+    // --- B: the annex, from the cut (a small settle into the first frame of "Forward")
+    if (t < this.tNow) {
+      const cam = this.camB(this.remapB(t).tr);
+      const k = prog(t, this.T0, this.T0 + 0.4, ease.outExpo);
+      return { ...cam, z: cam.z * lerp(1.1, 1, k), r: cam.r + 0.02 * (1 - k) };
+    }
+    return this.camC(t);
+  }
+
+  /** The form: typing, the stamp, the signature, FILED, then the whip off the sheet. */
+  camA(t: number): Cam {
     if (t < this.tStamp) {
       const settle = prog(t, this.T0, this.T0 + 0.6, ease.outExpo);
       const z = lerp(1.75, 1.55, settle);
@@ -395,21 +452,18 @@ export default class Bureau extends Scene {
       const y = lerp(A.y - 150, A.y + 110, cr);
       return { x: x - 60 * (1 - settle), y: y - 190 * (1 - settle), z, r: -0.035 - 0.025 * (1 - settle) };
     }
-    if (t < this.tWhipB) {
-      const wide: Cam = { x: A.x + 40, y: A.y + 12, z: lerp(0.95, 0.985, prog(t, this.tStamp, this.tSig, ease.linear)), r: -0.014 };
-      const sig: Cam = { x: A.x - 250, y: A.y + 250, z: lerp(1.42, 1.5, prog(t, this.tSig, this.tFiled, ease.linear)), r: -0.03 };
-      const wide2: Cam = { x: A.x + 70, y: A.y + 2, z: lerp(0.9, 0.93, prog(t, this.tFiled, this.tWhipB, ease.linear)), r: 0.01 };
-      let cam = lerpCam(wide, sig, prog(t, this.tSig - 0.04, this.tSig + 0.26, ease.outExpo));
-      cam = lerpCam(cam, wide2, prog(t, this.tFiled - 0.2, this.tFiled, ease.inOutCubic));
-      return cam;
+    const wide: Cam = { x: A.x + 40, y: A.y + 12, z: lerp(0.95, 0.985, prog(t, this.tStamp, this.tSig, ease.linear)), r: -0.014 };
+    const sig: Cam = { x: A.x - 250, y: A.y + 250, z: lerp(1.42, 1.5, prog(t, this.tSig, this.tFiled, ease.linear)), r: -0.03 };
+    const wide2: Cam = { x: A.x + 70, y: A.y + 2, z: lerp(0.9, 0.93, prog(t, this.tFiled, this.tExit, ease.linear)), r: 0.01 };
+    let cam = lerpCam(wide, sig, prog(t, this.tSig - 0.04, this.tSig + 0.26, ease.outExpo));
+    cam = lerpCam(cam, wide2, prog(t, this.tFiled - 0.2, this.tFiled, ease.inOutCubic));
+    // exit: filed away — the camera whips right, off the sheet's edge, into the dark desk by the downbeat
+    const k = prog(t, this.tExit, this.tEnd - 0.03, ease.inCubic);
+    if (k > 0) {
+      const off: Cam = { x: SHEET.x1 + W / (2 * 0.8) + 260, y: A.y + 60, z: 0.8, r: 0.05 };
+      cam = lerpCam(cam, off, k);
     }
-    if (t < this.tFwd) {
-      const from = this.camAt(this.tWhipB - 1e-4);
-      const to = this.camB(this.tFwd);
-      return lerpCam(from, to, prog(t, this.tWhipB, this.tFwd, ease.inOutExpo));
-    }
-    if (t < this.tNow) return this.camB(this.remapB(t).tr);
-    return this.camC(t);
+    return cam;
   }
 
   camB(t: number): Cam {
@@ -475,14 +529,18 @@ export default class Bureau extends Scene {
     c.globalCompositeOperation = 'lighter';
     c.setTransform(m.a, m.b, m.c, m.d, m.e, m.f);
     const view = this.viewRect(im);
-    if (view.y0 < A.y + 800 && view.y1 > A.y - 800) this.drawForm(c, t);
-    if (view.y0 < A.y + 800 && view.y1 > A.y + 700) this.drawPerforation(c, A.y + 760);
-    if (view.y0 < B.y + 800 && view.y1 > B.y - 800) {
-      const rb = this.remapB(t);
-      this.drawAnnex(c, rb.tr, t, rb.loop);
+    const vis = (y0: number, y1: number) => view.y0 < y1 && view.y1 > y0 && view.x0 < SHEET.x1 + 400;
+    if (this.part === 'form') {
+      if (vis(A.y - 800, A.y + 800)) this.drawForm(c, t);
+      if (vis(A.y + 700, A.y + 800)) this.drawPerforation(c, A.y + 760);
+    } else {
+      if (vis(B.y - 800, B.y + 800)) {
+        const rb = this.remapB(t);
+        this.drawAnnex(c, rb.tr, t, rb.loop);
+      }
+      if (vis(B.y + 700, B.y + 800)) this.drawPerforation(c, B.y + 760);
+      if (vis(C.y - 800, C.y + 800)) this.drawAppendix(c, t);
     }
-    if (view.y0 < B.y + 800 && view.y1 > B.y + 700) this.drawPerforation(c, B.y + 760);
-    if (view.y0 < C.y + 800 && view.y1 > C.y - 800) this.drawAppendix(c, t);
     c.setTransform(1, 0, 0, 1, 0, 0);
     c.globalCompositeOperation = 'source-over';
 
@@ -498,6 +556,7 @@ export default class Bureau extends Scene {
     (P.st0b!.value as THREE.Vector4).set(sA.rot, sA.on ? sA.strength : 0, 3.7, 0);
     (P.st1!.value as THREE.Vector4).set(sF.x, sF.y, sF.hw * 1.12, sF.hh * 1.12);
     (P.st1b!.value as THREE.Vector4).set(sF.rot, sF.on ? 1.0 : 0, 9.1, 0);
+    if (this.part === 'form') (P.sheet!.value as THREE.Vector4).set(SHEET.x0, SHEET.y0, SHEET.x1, SHEET.y1);
     this.paper.render(renderer, this.pageRT);
 
     // ---- tear
@@ -538,6 +597,12 @@ export default class Bureau extends Scene {
       T.blackout!.value = 0;
     }
     this.tearPass.render(renderer, out);
+    if (this.part === 'form') {
+      // over the desk the HUD goes back to bone
+      const gone = prog(t, this.tExit, this.tEnd - 0.03, ease.inCubic);
+      paperA = gone < 0.55 ? 1 : 0;
+      hudA = 1 - prog(gone, 0.35, 0.55) + prog(gone, 0.6, 1);
+    }
 
     return { hud: hudA, paper: paperA, bloom: 0.2, bloomThreshold: 1.8, halation: 0.04, vignette: 0.18, grain: 0.045, ca: 0.5 };
   }
@@ -878,6 +943,9 @@ export default class Bureau extends Scene {
     c.fillText(`EPOCH ${big ? '1,000,000' : String(epoch).padStart(6, '0')}`, 860, -236);
     c.fillStyle = PRINT(0.6);
     c.fillText(`LOSS ${loss.toFixed(4)}`, 860, -210);
+    // the P(doom) cameo: logged, but not a term in the objective
+    c.font = font(F.mono(400), 14); c.fillStyle = PRINT(0.55);
+    c.fillText(`P(DOOM) ${formatPDoom(this.pdoom.value(tReal))} · NOT IN THE LOSS`, 860, -186);
     c.textAlign = 'left'; c.letterSpacing = '0px';
 
     this.drawAnnexLyric(c, tReal, loop);

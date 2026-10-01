@@ -35,12 +35,11 @@ def load_lyrics_src():
     return [tuple(x) for x in json.loads(body)]
 
 
-# The Demucs stems were rendered from an mp3 decode that did NOT trim the LAME
-# encoder delay (1105 samples @ 48 kHz = 23.0 ms). The gapless decode of the mp3
-# (ffmpeg / libsndfile / browsers) is our time reference, so stems are shifted
-# earlier by 1015 samples @ 44.1 kHz (measured by cross-correlation, constant
-# over the whole song).
-STEM_OFFSET_SAMPLES = 1015
+# The Demucs stems are rendered from a gapless ffmpeg decode of the mp3
+# (work/pdoom.wav, 44.1 kHz), the same time reference as ffmpeg / libsndfile /
+# browsers, so they need no shift (cross-correlation: 0 samples). Kept as a
+# knob: an mp3 fed to Demucs directly keeps the LAME encoder delay.
+STEM_OFFSET_SAMPLES = 0
 STEM_OFFSET_SEC = STEM_OFFSET_SAMPLES / 44100
 
 

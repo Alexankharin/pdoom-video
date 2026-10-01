@@ -1,10 +1,13 @@
-// FIG. 9 — "Paperclips, filling a room" (chorus 3, the quiet breakdown).
-//  A  "as paperclips fill the room": the spark's line bends into one Gem clip (top-down, engraved),
-//     which cools into steel and replicates on 8th notes (1 → 64), then the lattice floods the plane.
+// FIG. 9 — "Paperclips, filling a room" (chorus 4, after hook 4: full band).
+//  A  "as paperclips fill the room": hook 4 leaves its spark at the frame centre; the camera starts on it
+//     and follows as its line bends into one Gem clip (top-down, engraved), which cools into steel and
+//     replicates on 8th notes (1 → 64), then the lattice floods the plane.
 //  B  the camera swings down from overhead to a low glide across an endless floor of clips (raymarched).
-//  C  "Killswitch guy's on PTO": an out-of-office auto-reply floats over the lattice, typed as sung.
+//  C  "Killswitch guys on PTO": an out-of-office auto-reply slams in on the beat, typed as sung;
+//     the camera bumps on the kicks.
 //  D  "Now there's nowhere left to go": a ceiling of clips slams down beat by beat; the lyric lives in
-//     the shrinking slot at the horizon (Archivo width 62), squeezed until the slot is a single line.
+//     the shrinking slot at the horizon (Archivo width 62), squeezed until the slot is a single line,
+//     which `cage` bends into its bars.
 import * as THREE from 'three';
 import { Scene, type Frame } from '../engine/scene';
 import { FSPass, Layer2D, W, H, SS_TAP } from '../engine/gl';
@@ -96,7 +99,7 @@ export default class Paperclips extends Scene {
     for (let b = Math.round(au.beatAt(d0)) + 1; au.timeOfBeat(b) < end - 0.3 && slams.length < 4; b++) slams.push(au.timeOfBeat(b));
     this.T = {
       start, end, db1, splits, fill: splits[5]! + 0.1, tilt0, tilt1: tilt0 + 1.0,
-      card0: this.L2.start - 0.42, card1: this.L3.start - 0.3, d0, slams,
+      card0: au.timeOfBeat(Math.floor(au.beatAt(this.L2.start - 0.12))), card1: this.L3.start - 0.3, d0, slams,
     };
   }
 
@@ -146,7 +149,11 @@ export default class Paperclips extends Scene {
     const drift = noise1(t * 0.6, 3) * 0.015;
     if (t < T.tilt0) {
       const roll = lerp(-0.07, 0.04, prog(t, T.start, T.tilt0, ease.inOutQuad)) + drift;
-      return lookCam([0, 0, this.topHeight(t)], [0, 0.0001, -1], roll);
+      // hook 4 hands over a spark at the frame centre: start centred on the pen, then settle on the clip
+      const p0 = clipPath(-LEAD);
+      const k = prog(t, T.start, T.db1 + 0.12, ease.inOutCubic);
+      const kick = this.ctx.audio.hit('kick', t, 0.08);
+      return lookCam([p0.x * (1 - k), p0.y * (1 - k), this.topHeight(t) * (1 - 0.025 * kick)], [0, 0.0001, -1], roll);
     }
     // swing down on a crane around a target gliding forward on the floor, ending 16 units up
     const hEnd = this.topHeight(T.tilt0);
@@ -160,7 +167,11 @@ export default class Paperclips extends Scene {
     // after the swing: ease the gaze up toward the horizon
     const lift = prog(t, T.tilt1 - 0.2, T.d0, ease.inOutQuad) * 0.05;
     fwd = nrm([fwd[0], fwd[1], fwd[2] + lift]);
-    let roll = lerp(0.04, 0, k) + drift + Math.sin(t * 1.4) * 0.018 * k;
+    // full band: a bump on every kick, a small roll snap on every downbeat
+    const kick = this.ctx.audio.hit('kick', t, 0.08);
+    pos = [pos[0], pos[1] + kick * 0.5 * k, pos[2] - kick * 0.35 * k];
+    const bar = Math.floor(this.ctx.audio.barAt(t));
+    let roll = lerp(0.04, 0, k) + drift + (bar % 2 ? 1 : -1) * 0.012 * k;
     if (t >= T.d0 - 0.25) {
       // phase D: level the camera and keep it centred in the shrinking slot
       const kd = prog(t, T.d0 - 0.25, T.d0 + 0.15, ease.inOutCubic);
@@ -252,7 +263,7 @@ export default class Paperclips extends Scene {
       u.ceilZ!.value = ce;
       u.lowerOn!.value = prog(t, T.tilt0 + 0.3, T.tilt1);
       const closed = ce < 900 ? clamp((ce - 1) / 22) : 1;
-      u.keyI!.value = lerp(0.12, 1, closed);
+      u.keyI!.value = lerp(0.12, 1, closed) * (1 + 0.18 * f.a.kick);
       u.rimI!.value = ce < 900 ? lerp(0.55, 1, clamp((ce - 4) / 20)) : 1;
       u.fogK!.value = lerp(0.0, 0.012, k * k);
       u.fogFar!.value = lerp(1400, 280, k);
@@ -310,9 +321,6 @@ export default class Paperclips extends Scene {
     for (const w of line.words) {
       const p = Lyrics.wordProgress(w, t);
       const ww = c.measureText(w.w).width;
-      c.strokeStyle = rgba('ink', 0.9);
-      c.lineWidth = 9;
-      c.strokeText(w.w, x, y);
       c.fillStyle = rgba('bone', 0.3);
       c.fillText(w.w, x, y);
       if (p > 0) {
@@ -329,19 +337,20 @@ export default class Paperclips extends Scene {
 
   private drawCard(c: CanvasRenderingContext2D, t: number) {
     const T = this.T;
-    const inK = prog(t, T.card0, T.card0 + 0.5, ease.outExpo);
+    const inK = prog(t, T.card0, T.card0 + 0.2, ease.outExpo);
     // crushed flat by the ceiling's first slam
     const outK = prog(t, T.d0 - 0.02, T.d0 + 0.13, ease.outExpo);
     if (inK <= 0 || outK >= 1) return;
     const line = this.L2;
     const cw = 780, ch = 344;
-    const x0 = 1010 + (1 - inK) * 160 - (t - T.card0) * 22;
-    const y0 = 196 + (1 - inK) * 24 + Math.sin(t * 1.7) * 4 + outK * (ch + 380);
+    const bump = this.ctx.audio.hit('kick', t, 0.07);
+    const x0 = 1010 + (1 - inK) * 260 - Math.max(0, t - T.card0) * 16;
+    const y0 = 196 + (1 - inK) * 30 + bump * 5 + outK * (ch + 380);
     c.save();
     c.globalAlpha = inK * (1 - prog(t, T.d0 + 0.08, T.d0 + 0.16));
     c.translate(x0, y0);
-    c.rotate(0.014 + Math.sin(t * 0.9) * 0.004);
-    c.scale(1 + outK * 0.08, Math.max(0.004, 1 - outK));
+    c.rotate(0.014 + (1 - inK) * 0.05);
+    c.scale((1 + outK * 0.08) * lerp(1.08, 1, inK), Math.max(0.004, 1 - outK) * lerp(1.08, 1, inK));
     c.translate(0, -ch * outK);
     c.fillStyle = 'rgba(0,0,0,0.5)';
     c.fillRect(16, 20, cw, ch);
@@ -368,7 +377,7 @@ export default class Paperclips extends Scene {
     const size = 40;
     c.font = font(F.mono(500), size);
     // typed as sung: a word's first key lands on its first syllable. A typed subject line in mono
-    // UI text: typewriter apostrophe (guy's), like the body's I'm
+    // UI text: typewriter quotes, like the body's We're
     const text = plain(line.text), words = line.words.map((w) => plain(w.w));
     let n = 0;
     for (const [i, w] of line.words.entries()) {
@@ -393,11 +402,11 @@ export default class Paperclips extends Scene {
     c.fillRect(pad, 156, cw - pad * 2, 1);
     c.font = font(F.mono(400), 19);
     c.fillStyle = rgba('bone', 0.74);
-    const body = ["I'm out of office with limited access to", 'the killswitch. For urgent matters,', 'please contact —'];
+    const body = ["We're out of the office with limited access to", 'the killswitch. For urgent matters,', 'please contact —'];
     body.forEach((s, i) => c.fillText(s, pad, 194 + i * 29));
     c.font = font(F.mono(400), 13);
     c.fillStyle = rgba('graphite', 1);
-    c.fillText('Returning: TBD', pad, ch - 44);
+    c.fillText('From: killswitch-oncall (3 recipients) · Returning: TBD', pad, ch - 44);
     c.fillText(`Current P(doom): ${formatPDoom(this.pdoom.value(t))} (this message was sent automatically)`, pad, ch - 22);
     c.restore();
   }

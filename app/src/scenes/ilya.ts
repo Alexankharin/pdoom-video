@@ -6,7 +6,11 @@
 // too. Black. "Was it all for show?": a spotlight thunks on — on nothing, centre stage of an empty
 // theatre (the props have been struck; their spike marks remain); the question is lettered on the
 // proscenium, word by word; in the silence the curtains close, the light leaking through the seam
-// collapses to a point at the exact centre of the frame: the spark the outro detonates.
+// collapses to a point at the exact centre of the frame: the spark that drops into FIG. 11's shaft.
+// Take 2 (params.take = 2, the second pass, lines read with nth = 1) is the same shot re-sampled: the orbit
+// mirrored round the other side of the lid (laptop left, the lyric set flush right), the screen's bar
+// admits it is SAMPLE 2 OF 2 · STILL REDACTED, "know" is WITHHELD (AGAIN), and the theatre is seen
+// from the back of the circle, high, the same curtains closing on the same nothing.
 import * as THREE from 'three';
 import { Scene, type Frame, type PostOverrides } from '../engine/scene';
 import { Layer2D, W, H } from '../engine/gl';
@@ -28,8 +32,8 @@ export default class IlyaScene extends Scene {
   tMeet = 0;
 
   override init() {
-    const { lyrics, audio, start, end } = this.ctx;
-    this.room = new IlyaRoom(lyrics, audio, start, end);
+    const { lyrics, audio, start, end, params } = this.ctx;
+    this.room = new IlyaRoom(lyrics, audio, start, end, (params.nth as number) ?? 0, (params.take as number) ?? 1);
     this.tMeet = this.room.T.meet;
   }
 
@@ -73,14 +77,16 @@ export default class IlyaScene extends Scene {
     if (fadeAll <= 0 || t < ws[0]!.start - 0.05) return;
     const split = ws.indexOf(T.well);
     const rows: Word[][] = split > 0 ? [ws.slice(0, split), ws.slice(split)] : [ws];
-    const fs = 62, x0 = 150, y0 = 214, lh = 76; // up in the dark above the desk: no backing needed
+    const fs = 62, y0 = 214, lh = 76; // up in the dark above the desk: no backing needed
     const fam = F.serif(400, true);
     c.save();
     c.textBaseline = 'alphabetic';
     c.font = font(fam, fs);
     const sp = measure(' ', fam, fs);
+    const right = T.take === 2; // take 2: flush right, over the mirrored room
     rows.forEach((row, ri) => {
-      let x = x0;
+      const rw = row.reduce((a, w) => a + measure(w.w, fam, fs), 0) + sp * (row.length - 1);
+      let x = right ? W - 150 - rw : 150;
       const y = y0 + ri * lh;
       for (const w of row) {
         const k = prog(t, w.start - 0.03, w.start + 0.14, ease.outCubic);
@@ -117,7 +123,7 @@ export default class IlyaScene extends Scene {
       c.font = font(F.mono(500), 12);
       c.letterSpacing = '3px';
       c.fillStyle = rgba('signal', 0.9 * prog(t, T.knowBar + 0.1, T.knowBar + 0.2));
-      c.fillText('WITHHELD', bx, by + bh + 20);
+      c.fillText(T.take === 2 ? 'WITHHELD (AGAIN)' : 'WITHHELD', bx, by + bh + 20);
     }
     c.restore();
   }
@@ -177,7 +183,7 @@ export default class IlyaScene extends Scene {
     const cx = W / 2, cy = H / 2;
     const appear = prog(t, t0, this.tMeet + 0.02, ease.outCubic);
     // collapse: both ends race to the centre on "show?", reaching it just before the cut
-    const col = prog(t, T.show.start + 0.01, end - 0.045, ease.inQuart);
+    const col = prog(t, T.collapse, end - 0.045, ease.inQuart);
     const y0 = lerp(top.y, cy, col), y1 = lerp(bot.y, cy, col);
     const heat = 0.8 + 2.4 * col;
     // one clean hairline (max-blended so joints don't double up), brighter low down where the pool is

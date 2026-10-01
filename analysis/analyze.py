@@ -24,27 +24,43 @@ from scipy.signal import butter, find_peaks, sosfiltfilt
 SR = 44100
 FPS = 100
 
+# Bar phase: beat index of the first downbeat.  The drums play four-on-the-
+# floor kicks with the snare on 8th positions 2 and 6 (beats 2 and 4) and
+# every chorus lands "DOOM" of "P(doom)" on a beat index = 0 mod 4.
+BAR_PHASE = 0
+
 # Section map in bars (bar k starts at downbeat k; bar 0 = first downbeat).
 # Rule: a section starts on the downbeat of the bar in which its first lyric
 # line starts, unless that line starts with a short (< 2 beat) pickup, in which
-# case the pickup stays in the previous section.  The choruses all start with
-# a ~3-beat pickup "I'm upping my P-" over a bass stop, landing "DOOM" on the
-# next downbeat, so the chorus section starts at the pickup bar.
+# case the pickup stays in the previous section.  Every chorus starts with a
+# ~1-bar pickup "I'm upping my P-" landing "DOOM" on the next downbeat, so the
+# chorus section starts at the pickup bar.  The song sings the bridge, the
+# "Just transformers" verse and the final chorus twice (bars 105-129 and
+# 129-161).
 SECTION_BARS = [
-    ("intro", None, 1),      # 0 .. bar 1 (1-bar synth intro, pickup "I" at 1.41)
-    ("verse1", 1, 9),        # Eb Bb Cm Ab x1 (2 bars each), no drums until bar 7
-    ("pre1", 9, 12),         # F F Ab  "ChatGPT, please don't eat me alive"
-    ("chorus1", 12, 20),     # pickup/stop bar 12, "DOOM" on bar 13
-    ("break1", 20, 21),      # 1-bar turnaround (tail of held "eyes")
-    ("verse2", 21, 29),
-    ("pre2", 29, 32),        # "Sydney, please let me free" (bass out)
-    ("chorus2", 32, 41),     # incl. bar 40 (held "reckoned", pickup "Forward")
-    ("verse3", 41, 49),
-    ("pre3", 49, 52),        # breakdown: drums + bass out, "Gato, please don't let me go"
-    ("chorus3", 52, 60),     # quiet chorus: light drums, no bass
-    ("bridge", 60, 68),      # "Just transformers ..." (full band from bar 61)
-    ("chorus4", 68, 77),     # final chorus, bar 76 = stop bar ("all for show?")
-    ("outro", 77, None),     # full band + "oh" vocals to bar 84 (152.98), then decay
+    ("intro", None, 10),     # synth intro; drums from bar 9; pickup "I" at 17.87
+    ("verse1", 10, 18),      # "I see sparks of AGI ..."
+    ("pre1", 18, 21),        # "Darling, please don't eat me alive" (bass out bars 20-21)
+    ("chorus1", 21, 30),     # pickup bar 21, "DOOM" on bar 22
+    ("verse2", 30, 38),      # "A thousand thoughts before you speak"
+    ("pre2", 38, 41),        # "Watcher, who is watching you?" (bass out)
+    ("chorus2", 41, 49),     # "I hear the basilisk boom" ... "Turn the dial"
+    ("verse3", 49, 58),      # "Forward MLP" ... "Without a single cdr"
+    ("pre3", 58, 61),        # breakdown: drums + bass out, "Genie, leave the choice to me"
+    ("chorus3", 61, 69),     # light chorus: synths out, "NVDA" ... "safe enough, we reckoned"
+    ("verse4", 69, 73),      # 4-bar verse "We gave the oracle its hands"
+    ("pre4", 73, 74),        # 1-bar pre "Darling, please don't make me choose"
+    ("chorus4", 74, 81),     # drums + bass drop out for bars 79-81 ("We built the cage ...")
+    ("verse5", 81, 94),      # "We had a stable training run" ... "atoms rearranging"
+    ("pre5", 94, 97),        # "Darling, leave some room for me" (drums + bass out)
+    ("chorus5", 97, 105),    # sparse chorus: synths out, bass out from bar 101
+    ("bridge1", 105, 113),   # "From masked pre-training days" (full band from bar 106)
+    ("verse6", 113, 121),    # "Just transformers all the way!" ... "change the game"
+    ("chorus6", 121, 129),   # "Just as foretold by Loom" ... "tell us so?" + "oh" ad-libs
+    ("bridge2", 129, 138),   # second pass; drums + bass out bars 131-133
+    ("verse7", 138, 149),    # second pass; drums out bars 147-148
+    ("chorus7", 149, 161),   # final chorus, held "so?" from 280.5
+    ("outro", 161, None),    # tail of the held "so?" (to 291.0), band stops ~292.5
 ]
 
 
@@ -86,49 +102,60 @@ def norm01(x, pct=99.0):
 
 
 # ---------------------------------------------------------------------------
-def fit_grid(drums, mix, sr, duration):
-    """Constant-tempo grid: coarse tempo/phase search on spectral-flux onset
-    envelopes, then phase refinement on kick attack times."""
-    hop = 64
-    fps = sr / hop
+def onset_env(drums, mix, sr):
+    """Drum + mix spectral-flux onset envelope (~1.45 ms frames) and its frame rate."""
     od = librosa.onset.onset_strength(y=librosa.resample(drums, orig_sr=sr, target_sr=22050),
-                                      sr=22050, hop_length=hop // 2, lag=1, max_size=1)
+                                      sr=22050, hop_length=32, lag=1, max_size=1)
     om = librosa.onset.onset_strength(y=librosa.resample(mix, orig_sr=sr, target_sr=22050),
-                                      sr=22050, hop_length=hop // 2, lag=1, max_size=1)
-    o = od / (np.percentile(od, 99) + 1e-9) + om / (np.percentile(om, 99) + 1e-9)
-    ofps = 22050 / (hop // 2)
+                                      sr=22050, hop_length=32, lag=1, max_size=1)
+    return od / (np.percentile(od, 99) + 1e-9) + om / (np.percentile(om, 99) + 1e-9), 22050 / 32
 
-    def score(P, off):
-        ts = off + P * np.arange(int(duration / P) + 1)
-        idx = np.round(ts * ofps).astype(int)
-        idx = idx[(idx > 2) & (idx < len(o) - 2)]
-        return np.maximum.reduce([o[idx - 1], o[idx], o[idx + 1]]).mean()
 
-    best = (0, None, None)
-    for bpm in np.arange(125.0, 138.0, 0.02):
-        P = 60 / bpm
-        for off in np.arange(0, P, 0.004):
-            s = score(P, off)
-            if s > best[0]:
-                best = (s, bpm, off)
-    _, bpm, off = best
-    for b2 in np.arange(bpm - 0.02, bpm + 0.02, 0.001):  # fine
-        P = 60 / b2
-        for o2 in np.arange(off - 0.01, off + 0.01, 0.001):
-            s = score(P, o2)
-            if s > best[0]:
-                best = (s, b2, o2)
-    _, bpm, off = best
-    P = 60 / bpm
-    # refine phase on kick attacks (steepest rise of low-band log energy)
+def fit_grid(drums, mix, sr, duration, knot_beats=48):
+    """Beat grid on a smooth tempo curve (the song accelerates ~132 -> ~140 BPM):
+    beat time = cubic spline of the beat index (knots every `knot_beats` beats).
+    Initialised from librosa's dynamic-programming beat tracker, then refitted
+    to the onset-envelope maxima near each grid beat (weighted by strength,
+    weakest 30% ignored), iterated; the phase is finally refined on kick
+    attack times, extended over silence at the ends at the local tempo.
+    Returns (beat times from the first beat >= 0, residual sd of the onset fit, kick residuals)."""
+    from scipy.interpolate import LSQUnivariateSpline
+    o, ofps = onset_env(drums, mix, sr)
+    y22 = librosa.resample(drums + 0.5 * mix, orig_sr=sr, target_sr=22050)
+    oenv = librosa.onset.onset_strength(y=y22, sr=22050, hop_length=128)
+    _, b0 = librosa.beat.beat_track(onset_envelope=oenv, sr=22050, hop_length=128, units="time", tightness=400)
+
+    def spline(i, t, w=None):
+        kn = np.arange(i.min() + knot_beats, i.max() - knot_beats + 1, knot_beats)
+        return LSQUnivariateSpline(i, t, kn, w=w, k=3)
+
+    s = spline(np.arange(len(b0), dtype=float), b0)
+    pad = 40
+    for _ in range(4):
+        idx = np.arange(-pad, len(b0) + pad, dtype=float)
+        T = s(idx)
+        ok = (T > 0.5) & (T < duration - 0.5)
+        idx, T = idx[ok], T[ok]
+        tt, ww = [], []
+        for t in T:
+            a, b = int((t - 0.035) * ofps), int((t + 0.035) * ofps)
+            k = a + int(np.argmax(o[a:b]))
+            tt.append(k / ofps)
+            ww.append(o[k])
+        tt, ww = np.array(tt), np.array(ww)
+        good = ww > np.percentile(ww, 30)
+        s = spline(idx[good], tt[good], w=ww[good])
+    res = (tt - s(idx))[good]
+    # phase on kick attacks (steepest rise of low-band log energy; flux peaks lag them)
+    idx = np.arange(-pad, len(b0) + pad, dtype=float)
+    T = s(idx)
     kick_t, _ = band_onsets(drums, sr, None, 120, win=0.012, min_gap=0.2, rel_db=12)
-    n = np.round((kick_t - off) / P)
-    res = kick_t - (off + n * P)
-    res = res[np.abs(res) < 0.06]
-    off = off + float(np.median(res))
-    # first beat >= 0
-    off = off - P * math.floor(off / P)
-    return bpm, P, off, res
+    near = np.array([T[np.argmin(np.abs(T - k))] for k in kick_t])
+    kres = kick_t - near
+    kres = kres[np.abs(kres) < 0.06]
+    T = T + float(np.median(kres))
+    T = T[(T >= 0) & (T <= duration)]
+    return T, res, kres
 
 
 def band_onsets(x, sr, lo, hi, win=0.010, hop_s=0.002, min_gap=0.08, rel_db=10.0,
@@ -161,7 +188,7 @@ def band_onsets(x, sr, lo, hi, win=0.010, hop_s=0.002, min_gap=0.08, rel_db=10.0
     return np.array(times), np.array(strength)
 
 
-def drum_onsets(d, sr, grid_P, grid_off):
+def drum_onsets(d, sr):
     """Kick / snare / hat onsets from the drums stem."""
     # KICK: <120 Hz
     kt, kdb = band_onsets(d, sr, None, 120, win=0.012, min_gap=0.15, rel_db=12)
@@ -245,13 +272,16 @@ def main(plots=False):
         if len(stems[n]) < len(mix):
             stems[n] = np.pad(stems[n], (0, len(mix) - len(stems[n])))
 
-    bpm, P, off, kick_res = fit_grid(stems["drums"], mix, SR, duration)
-    print(f"tempo {bpm:.3f} BPM  period {P:.5f}s  first beat {off:.4f}s  kick residual sd {kick_res.std()*1000:.1f} ms")
-    beats = off + P * np.arange(int((duration - off) / P) + 1)
-    # bar phase: beat index 0 is a downbeat (see NOTES / qa/drums_pattern.png)
-    beat_in_bar = np.arange(len(beats)) % 4
+    beats, onset_res, kick_res = fit_grid(stems["drums"], mix, SR, duration)
+    P = float(np.mean(np.diff(beats)))
+    bpm = 60 / P
+    period = np.diff(beats)
+    print(f"tempo {60/period[:20].mean():.2f} -> {60/period[-20:].mean():.2f} BPM (mean {bpm:.3f})  first beat {beats[0]:.4f}s  "
+          f"onset fit sd {onset_res.std()*1000:.1f} ms  kick residual sd {kick_res.std()*1000:.1f} ms")
+    # bar phase: beat index BAR_PHASE is the first downbeat (see NOTES)
+    beat_in_bar = (np.arange(len(beats)) - BAR_PHASE) % 4
     downbeats = beats[beat_in_bar == 0]
-    bar_t = lambda k: float(off + 4 * P * k)
+    bar_t = lambda k: float(downbeats[k]) if k < len(downbeats) else float(duration)
 
     # envelopes -------------------------------------------------------------
     n = int(math.ceil(duration * FPS))
@@ -267,7 +297,7 @@ def main(plots=False):
         assert len(env[k]) == n
 
     # onsets -------------------------------------------------------------------
-    (kt, kdb), (st, sdb), (ht, hdb), sn_thr = drum_onsets(stems["drums"], SR, P, off)
+    (kt, kdb), (st, sdb), (ht, hdb), sn_thr = drum_onsets(stems["drums"], SR)
     onsets = {
         "kick": [[round(float(t), 3), round(float(s), 3)] for t, s in zip(kt, strength01(kdb))],
         "snare": [[round(float(t), 3), round(float(s), 3)] for t, s in zip(st, strength01(sdb))],
@@ -276,7 +306,9 @@ def main(plots=False):
     }
     # snare / kick position statistics -> bar phase evidence
     def pos_hist(ts):
-        ph = np.round((np.asarray(ts) - off) / (P / 2)).astype(int) % 8
+        # 8th-note position in the bar (0 = downbeat) on the tempo curve
+        bi = np.interp(np.asarray(ts), beats, np.arange(len(beats), dtype=float))
+        ph = np.round((bi - BAR_PHASE) * 2).astype(int) % 8
         return np.bincount(ph, minlength=8).tolist()
     print("kick   8th-positions in bar:", pos_hist(kt))
     print("snare  8th-positions in bar:", pos_hist(st))
@@ -295,6 +327,8 @@ def main(plots=False):
         duration=round(duration, 3),
         bpm=round(bpm, 3),
         beat_period=round(P, 5),
+        tempo_curve=[[round(float(beats[i]), 2), round(float(60 / (beats[i + 1] - beats[i])), 2)]
+                     for i in range(0, len(beats) - 1, 16)],
         time_signature=4,
         beats=[round(float(t), 3) for t in beats],
         downbeats=[round(float(t), 3) for t in downbeats],
@@ -302,9 +336,9 @@ def main(plots=False):
         fps=FPS,
         **env,
         onsets=onsets,
-        notes=NOTES.format(bpm=bpm, off=off, P=P, first_db=float(downbeats[0]),
-                           b61=bar_t(61), b76=bar_t(76), b77=bar_t(77), b84=bar_t(84),
-                           sn=len(st), kk=len(kt), hh=len(ht)),
+        notes=NOTES.format(bpm=bpm, bpm0=60 / period[:20].mean(), bpm1=60 / period[-20:].mean(),
+                           res=onset_res.std() * 1000, kres=kick_res.std() * 1000,
+                           first_db=float(downbeats[0]), sn=len(st), kk=len(kt), hh=len(ht)),
     )
     (common.DATA / "audio.json").write_text(json.dumps(doc, separators=(",", ":")))
     print("wrote", common.DATA / "audio.json", f"{len(beats)} beats, {len(downbeats)} downbeats, "
@@ -315,31 +349,30 @@ def main(plots=False):
 
 
 NOTES = (
-    "Timeline = gapless mp3 decode (ffmpeg/libsndfile/browsers); Demucs stems were "
-    "shifted -23.0 ms (LAME encoder delay) to match. "
-    "Tempo is constant: {bpm:.3f} BPM (period {P:.5f} s), fitted over the whole song on "
-    "drum+mix onset envelopes (no drift: per-15 s phase deviation <= 2 ms), phase refined "
-    "on kick attack times; first beat {off:.3f} s. The grid is extrapolated through the "
-    "drum-less intro/verse1/pre3 and the fade. "
-    "Bar phase: the drums play four-on-the-floor kick with snare on beats 2 and 4 "
-    "(broadband snare bursts on odd beat indices) and 8th-note off-beat hats, which fixes "
-    "the phase up to half a bar; the half-bar ambiguity is resolved by the harmony: the "
-    "progression Eb-Bb-Cm-Ab (2 bars per chord, F-F-Ab in the pre-choruses) changes chord "
-    "exactly on beat indices = 0 mod 8, and every chorus lands 'DOOM' of 'P(doom)' on a "
-    "downbeat (bars 13/33/53/69). First downbeat {first_db:.3f} s; bar k starts "
-    "at first_downbeat + k*4*period. "
-    "Sections start on downbeats; choruses include their 3-beat pickup bar "
-    "('I'm upping my P-' over a bass stop). pre3 (89.3-94.8) is a breakdown with no drums "
-    "or bass; chorus3 (94.8-109.3) is a quiet chorus with light drums and no bass; the "
-    "full band returns in bar 61 ({b61:.2f} s). chorus4 ends with a stop bar ({b76:.2f}-{b77:.2f} s, "
-    "'all for show?'), outro is loud until {b84:.2f} s (drums stop) then decays to silence ~155.5 s. "
+    "Timeline = gapless mp3 decode (ffmpeg/libsndfile/browsers); the Demucs stems are "
+    "rendered from a gapless WAV decode and need no shift. "
+    "Tempo is NOT constant: the song accelerates smoothly from {bpm0:.1f} to {bpm1:.1f} BPM "
+    "(mean {bpm:.3f}). beats[] follow a cubic spline of the beat index (knots every 48 beats) "
+    "fitted to drum+mix onset-envelope maxima near each beat (residual sd {res:.1f} ms), phase "
+    "refined on kick attacks (residual sd {kres:.1f} ms), extended through the drum-less intro "
+    "and the breakdowns at the local tempo; beat_period / bpm are the song means and "
+    "tempo_curve lists [time, local BPM] every 16 beats. Use beats[] (audio.ts interpolates "
+    "them), never a constant period. "
+    "Bar phase: four-on-the-floor kick, snare on beats 2 and 4, 8th-note off-beat hats; every "
+    "chorus lands 'DOOM' of 'P(doom)' on a downbeat (bars 22/42/62/75/98/122/150). "
+    "First downbeat {first_db:.3f} s; bar k starts at downbeats[k]. "
+    "Sections start on downbeats; choruses include their pickup bar ('I'm upping my P-'). "
+    "The bridge, the 'Just transformers' verse and the final chorus are sung twice "
+    "(bars 105-129, then 129-161). Breakdowns (drums and bass out): bars 20-21, 39-41, "
+    "59-61, 79-81, 95-97, 131-133, 147-148. The final 'so?' is held from 280.5 to 291.0 s; "
+    "the band stops ~292.5 s. "
     "Envelopes: 100 fps, frame i centred at i/100 s, 46 ms RMS window, one-pole smoothing "
     "(10 ms attack / 90 ms release), each divided by its own 99th percentile and clipped "
     "to 0..1 (linear amplitude). low <150 Hz, mid 150-2000 Hz, high >4 kHz of the full mix; "
     "vocal/drums/bass/other = stem RMS. "
     "Onsets [time, strength 0-1] from the drums stem: kick = attack (steepest rise) of the "
     "<120 Hz band ({kk}); snare = 1.5-5 kHz attacks whose 0.5-5 kHz noise tail 40-120 ms later is in the "
-    "loudest local class ({sn}; kick-only in pre1/pre2); hat = >7 kHz attacks not within 40 ms of a snare or 30 ms of a kick ({hh}; mostly 8th off-beats). vocal = note "
+    "loudest local class ({sn}); hat = >7 kHz attacks not within 40 ms of a snare or 30 ms of a kick ({hh}; mostly 8th off-beats). vocal = note "
     "onsets from the vocal stem (log-mel flux peaks + legato pitch jumps > 0.8 semitone), "
     "including backing vocals / ad-libs."
 )

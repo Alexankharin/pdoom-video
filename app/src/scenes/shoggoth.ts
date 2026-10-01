@@ -25,6 +25,9 @@ import { PDoom, formatPDoom, drawReadout } from '../engine/hud';
 import { clamp, lerp, ease, prog, springStep, pulse, hash, TAU, frameIdx } from '../engine/util';
 import { GBUF_FRAG, COMP_FRAG, NK, NT, NE } from './shoggoth-glsl';
 import { SHROOMS, SHROOMS_FAM, shroomsAffine } from './room-shrooms';
+import { LineBatch } from '../engine/lines';
+import { LIN } from '../engine/palette';
+import { sparkHead } from './_motifs';
 
 const GW = W / 2, GH = H / 2; // G-buffer resolution
 const FOV = 38; // vertical, degrees
@@ -135,6 +138,8 @@ export default class Shoggoth extends Scene {
   });
   private textL = new Layer2D();
   private over = new Layer2D();
+  /** The exit: the flatline shrinks like a CRT dot into the spark, where `thoughts` picks it up. */
+  private exitL = new LineBatch(64);
 
   private L1!: Line; private L2!: Line; private shroomsW: Word | null = null; private tSee = 0;
   private tS = 0; private tE = 0; private tThrough = 0; private tLies = 0; private tBack = 0; private tCut2 = 0; private tWith = 0; private tClose0 = 0; private tCollapse = 0;
@@ -406,6 +411,8 @@ export default class Shoggoth extends Scene {
     cu.fogNear!.value = this.cam.pos.length() - 0.9;
     cu.fogK!.value = 0.32;
     cu.flatK!.value = t < this.tCollapse ? 0 : prog(t, this.tCollapse + 0.08, this.tCollapse + 0.26, ease.outCubic);
+    const tDot0 = this.tCollapse + 0.26, tDot1 = this.tE - 0.07;
+    if (t >= tDot0) cu.flatK!.value = 0; // the line is redrawn below, shrinking to the dot
     cu.bodyK!.value = (1 + 1.5 * cK) * (1 - prog(t, this.tCollapse + 0.18, this.tCollapse + 0.3));
 
     // passes
@@ -418,6 +425,19 @@ export default class Shoggoth extends Scene {
     this.drawOverlay(t, squash);
     cu.overTex!.value = this.over.upload();
     this.comp.render(renderer, out);
+    if (t >= tDot0) {
+      const g = this.exitL; g.clear();
+      const k = ease.inOutCubic(prog(t, tDot0, tDot1));
+      const hw = Math.max(0.01, 1000 * (1 - k));
+      const S = LIN.signal;
+      const layer = (w: number, m: number, rgb: [number, number, number] = S) => g.seg2(960 - hw, 540, 960 + hw, 540, w, [rgb[0] * m, rgb[1] * m, rgb[2] * m], 1);
+      const fade = 1 - prog(k, 0.8, 1);
+      layer(26, 0.08 * fade); layer(9, 0.3 * fade); layer(3.2, 1.6 * fade); layer(1.2, 1.2 * fade, [1, 0.8, 0.6]);
+      // the dot: the spark, lit as the line arrives
+      const d = prog(k, 0.55, 1);
+      if (d > 0) sparkHead(g, 960, 540, t, 0.6 + 0.5 * ease.outBack(d), 1.2 * d);
+      g.render(renderer, out);
+    }
 
     const beatP = pulse(t, au.timeOfBeat(Math.floor(au.beatAt(t))), 0.1);
     const backK = pulse(t, this.tBack, 0.12) * (t >= this.tBack ? 1 : 0);

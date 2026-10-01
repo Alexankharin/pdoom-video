@@ -1,9 +1,12 @@
-// PROMPT x3 — the pre-choruses. A thin prompt field in a vast dark field; the plea is
-// typed as tokens exactly on the sung word starts, each with a tiny next-token
-// distribution flickering above it; ⏎ launches the chorus.
-//   chatgpt: an engraved throat of rings pulling in, rushing at camera on ⏎
-//   sydney : vertical bars closing in on the beat; the reply draws one unsettling smile
-//   gato   : the prompt floats alone; letters drift apart; the cursor holds the last letter
+// PROMPT x5 — the pre-choruses. A thin prompt field in a vast dark field; the plea is typed as
+// tokens exactly on the sung word starts, each with a tiny next-token distribution flickering
+// above it; ⏎ launches the chorus. Five looks of one template (prompt-data.ts: LOOK):
+//   darling (throat): an engraved throat of rings pulling in, rushing at camera on ⏎
+//   watcher (bars)  : vertical bars closing in on the beat; the reply answers, and draws one smile
+//   genie   (float) : the prompt floats alone; typed letters rise away like smoke; the cursor holds on
+//   choose  (split) : one bar, quick-fire: every token a coin toss; on ⏎ the frame splits into A | B
+//   room    (crowd) : the context window is full: the song so far crowds the field, which shrinks
+//                     around the caret; on ⏎ the scrollback closes over the plea
 import type * as THREE from 'three';
 import { Scene, type Frame, type PostOverrides } from '../engine/scene';
 import { FSPass, Layer2D, W, H } from '../engine/gl';
@@ -13,7 +16,8 @@ import { F, font, measure, plain } from '../engine/type';
 import { Lyrics, norm, type Line, type Word } from '../engine/lyrics';
 import { clamp, ease, hash, lerp, noise1, prog, smoothstep, TAU, frameIdx } from '../engine/util';
 import { sparkHead, sparkParticles, MASK } from './_motifs';
-import { SPECS, REPLY, META, type Variant, type Cand } from './prompt-data';
+import { SPECS, REPLY, META, GLITCH, LOOK, type Variant, type Look, type Cand } from './prompt-data';
+import { contextRows, drawWall, WALL } from './prompt-wall';
 import { PDoom, formatPDoom } from '../engine/hud';
 
 interface Tok {
@@ -26,18 +30,40 @@ interface Tok {
   first: boolean; // first token of its word
   dist: Cand[] | null;
   pick: number;
+  waver: boolean;
   id: number; // fake token id
   tPopEnd: number; // popup collapse start
+  k: number; // index
+  raise: boolean; // popup set a level higher (it overlaps the previous one in time)
 }
 
 interface Cam { cx: number; cy: number; zoom: number; rot: number }
 interface Shot { t: number; zoom: number; focus: 'caret' | 'typed' | 'field' | 'key'; rot: number; push: number; blend: number; dy?: number }
 
+/** Per-look timing and layout. */
+interface LookCfg {
+  cy: number; // field centre (UI px)
+  popPre: number; // distribution appears this long before the sampled token
+  popHold: number; // …and stays this long after it
+  popCol: number; // collapse duration
+  popW: number; // panel width
+  beatsBefore: number; gap: number; q: number; // ⏎ placement (see init)
+  hot: number; // orange glow boost of the UI
+}
+const CFG: Record<Look, LookCfg> = {
+  throat: { cy: 530, popPre: 0.16, popHold: 0.62, popCol: 0.12, popW: 290, beatsBefore: 1, gap: 0.35, q: 1, hot: 1.2 },
+  bars: { cy: 500, popPre: 0.16, popHold: 0.62, popCol: 0.12, popW: 290, beatsBefore: 2, gap: 0.2, q: 1, hot: 0.9 },
+  float: { cy: 530, popPre: 0.16, popHold: 0.9, popCol: 0.12, popW: 290, beatsBefore: 1, gap: 0.35, q: 2, hot: 0.25 },
+  split: { cy: 520, popPre: 0.07, popHold: 0.15, popCol: 0.05, popW: 236, beatsBefore: 1, gap: 0.08, q: 2, hot: 1.1 },
+  crowd: { cy: 580, popPre: 0.16, popHold: 0.8, popCol: 0.12, popW: 290, beatsBefore: 1, gap: 0.35, q: 2, hot: 0.6 },
+};
+
 const FS = 60; // token font size (UI px)
-const POP_PRE = 0.16; // distribution appears this long before the sampled token
 
 export default class Prompt extends Scene {
-  variant: Variant = 'chatgpt';
+  variant: Variant = 'darling';
+  look: Look = 'throat';
+  cfg: LookCfg = CFG.throat;
   ui = new Layer2D();
   glow = new LineBatch(3000);
   comp!: FSPass;
@@ -46,16 +72,21 @@ export default class Prompt extends Scene {
   text = '';
   adv = 36;
   fam = F.mono(400);
-  // UI geometry (UI space = 1920x1080 plane before the camera)
-  fx0 = 0; fx1 = 0; fy0 = 0; fy1 = 0; tx0 = 0; base = 0; keyX = 0;
+  // UI geometry (UI space = 1920x1080 plane before the camera); the crowd look moves fx1/fy0/fy1/keyX per frame
+  fx0 = 0; fx1 = 0; fy0 = 0; fy1 = 0; tx0 = 0; base = 0; keyX = 0; fx1Base = 0; cy = 530;
   tFirst = 0; tLast = 0; tEnter = 0; tEnd = 0; tShut = 0; tSmile0 = 0; tSmile1 = 0;
   pd!: PDoom;
   shots: Shot[] = [];
   reply = '';
+  rows: string[] = [];
 
   override init() {
     const { lyrics, params, start, end, audio } = this.ctx;
-    this.variant = (params.variant ?? 'chatgpt') as Variant;
+    this.variant = (params.variant ?? 'darling') as Variant;
+    if (!SPECS[this.variant]) this.variant = 'darling';
+    this.look = LOOK[this.variant];
+    this.cfg = CFG[this.look];
+    const cfg = this.cfg, look = this.look;
     this.tEnd = end;
     this.pd = new PDoom(lyrics);
     // the plea: the line that starts inside our window
@@ -76,32 +107,37 @@ export default class Prompt extends Scene {
       let pieces = specs[norm(w.w)];
       if (!pieces || pieces.map((p) => p.s).join('') !== ww) pieces = [{ s: ww, dist: [[ww, 0.5], ['…', 0.12]] }];
       const syl = w.syl && w.syl.length === pieces.length ? w.syl : null;
+      const step = Math.min(0.22, (w.end - w.start) / (pieces.length + 1));
       let off = 0;
       pieces.forEach((p, pi) => {
-        const t0 = pi === 0 ? w.start : syl ? syl[pi]![0] : w.start + pi * Math.min(0.09, (w.end - w.start) / pieces!.length);
+        const t0 = pi === 0 ? w.start : syl ? syl[pi]![0] : w.start + pi * step;
         this.toks.push({
           text: p.s, ci: ci + off, n: p.s.length, space: wi > 0 && pi === 0, t0, word: w, first: pi === 0,
-          dist: p.dist ?? null, pick: p.pick ?? 0, id: 1000 + Math.floor(hash(wi, pi, 7) * 98000), tPopEnd: 0,
+          dist: p.dist ?? null, pick: p.pick ?? 0, waver: !!p.waver, id: 1000 + Math.floor(hash(wi, pi, 7) * 98000), tPopEnd: 0, k: this.toks.length, raise: false,
         });
         off += p.s.length;
       });
       ci += ww.length;
     });
-    this.toks.forEach((k, i) => {
-      const next = this.toks[i + 1];
-      const long = k.first && k.word.end - k.word.start > 1.5 && (!next || next.word !== k.word);
-      const hold = long ? k.word.end - k.t0 - 0.45 : this.variant === 'gato' ? 0.9 : 0.62;
-      k.tPopEnd = Math.max(k.t0 + 0.2, Math.min(k.t0 + hold, next ? next.t0 - POP_PRE - 0.1 : k.t0 + hold));
-    });
     this.tFirst = words[0]!.start;
     this.tLast = words[words.length - 1]!.start;
-    const beatsBefore = this.variant === 'sydney' ? 2 : 1;
-    const gap = this.variant === 'sydney' ? 0.2 : 0.35;
-    // ⏎ on the grid: the first beat (gato: 8th) after the last word, never later than end - 0.2
-    const want = Math.max(this.tLast + gap, audio.timeOfBeat(Math.round(audio.beatAt(end)) - beatsBefore));
-    const q = this.variant === 'gato' ? 2 : 1;
+    // ⏎ on the grid: the first beat (or 8th) after the last word, never later than end - 0.2
+    const want = Math.max(this.tLast + cfg.gap, audio.timeOfBeat(Math.round(audio.beatAt(end)) - cfg.beatsBefore));
+    const q = cfg.q;
     const bq = Math.min(Math.ceil((audio.beatAt(want) - 0.06) * q) / q, Math.floor(audio.beatAt(end - 0.2) * q) / q);
     this.tEnter = clamp(audio.timeOfBeat(bq), start + 0.5, end - 0.2);
+    this.toks.forEach((k, i) => {
+      const next = this.toks[i + 1];
+      const lastOfWord = !next || next.word !== k.word;
+      const long = lastOfWord && k.word.end - k.word.start > 1.5;
+      const hold = k.waver ? this.tEnter - 0.02 - k.t0 : long ? k.word.end - k.t0 - 0.45 : cfg.popHold;
+      const cap = next && !k.waver ? next.t0 - cfg.popPre - 0.1 : k.t0 + hold;
+      k.tPopEnd = Math.max(k.t0 + Math.min(0.2, cfg.popHold), Math.min(k.t0 + hold, cap));
+    });
+    this.toks.forEach((k, i) => {
+      const prev = this.toks[i - 1];
+      k.raise = !!prev && !prev.raise && !!prev.dist && prev.tPopEnd + cfg.popCol > k.t0 - cfg.popPre;
+    });
     this.reply = REPLY[this.variant] ?? '';
     const nextL = lyrics.nextLine(this.line.start + 0.01);
     const nextW = nextL ? nextL.words[0]!.start : end;
@@ -113,59 +149,85 @@ export default class Prompt extends Scene {
     const textW = this.adv * this.text.length;
     const padL = 96, padR = 150;
     const fw = Math.max(1180, textW + padL + padR);
-    this.fx0 = (W - fw) / 2; this.fx1 = this.fx0 + fw;
-    const cy = this.variant === 'sydney' ? 500 : 530;
-    this.fy0 = cy - 64; this.fy1 = cy + 64;
+    this.fx0 = (W - fw) / 2; this.fx1 = this.fx0 + fw; this.fx1Base = this.fx1;
+    this.cy = cfg.cy;
+    this.fy0 = this.cy - 64; this.fy1 = this.cy + 64;
     this.tx0 = this.fx0 + padL;
-    this.base = cy + FS * 0.34;
+    this.base = this.cy + FS * 0.34;
     this.keyX = this.fx1 - 78;
+    if (look === 'crowd') this.rows = contextRows(lyrics, this.line.start);
 
-    // compositor + background/foreground per variant
-    this.comp = new FSPass(SHADERS[this.variant], {
+    // compositor + background/foreground per look
+    this.comp = new FSPass(SHADERS[look], {
       ui: { value: this.ui.texture }, t: { value: 0 }, lt: { value: 0 }, aspect: { value: W / H },
       camZ: { value: 0 }, glow: { value: 0 }, vp: { value: [0, 0] }, rot: { value: 0 }, rush: { value: 0 }, swallow: { value: 0 },
-      beat: { value: 0 }, hotBoost: { value: 1.2 }, spacing: { value: 400 }, barW: { value: 22 }, barCx: { value: W / 2 }, shut: { value: 0 },
+      beat: { value: 0 }, hotBoost: { value: cfg.hot }, spacing: { value: 400 }, barW: { value: 22 }, barCx: { value: W / 2 }, shut: { value: 0 },
       zoomBlur: { value: 0 }, zbCenter: { value: [0.5, 0.5] }, uiAlpha: { value: 1 }, light: { value: 0 },
+      split: { value: 0 }, inv: { value: 0 }, seam: { value: 0 },
     });
-
     this.shots = this.makeShots();
-    this.comp.u.hotBoost!.value = this.variant === 'gato' ? 0.25 : this.variant === 'sydney' ? 0.9 : 1.2;
   }
 
   // ------------------------------------------------------------------ camera
   private makeShots(): Shot[] {
-    const w = this.line.words, s = this.ctx.start;
+    const w = this.line.words, s = this.ctx.start, au = this.ctx.audio;
     const ws = (i: number) => w[Math.min(i, w.length - 1)]!.start;
-    if (this.variant === 'chatgpt') return [
-      { t: s, zoom: 2.7, focus: 'caret', rot: 0, push: 0.05, blend: 0 },
-      { t: ws(0), zoom: 2.25, focus: 'caret', rot: 0, push: 0.03, blend: 0 },
-      { t: ws(1), zoom: 1.5, focus: 'typed', rot: -0.018, push: 0.04, blend: 0 },
-      { t: ws(3), zoom: 2.0, focus: 'caret', rot: 0.014, push: 0.05, blend: 0 },
-      { t: ws(5), zoom: 1.08, focus: 'field', rot: 0, push: 0.035, blend: 0 },
-      { t: this.tEnter, zoom: 1.12, focus: 'field', rot: 0, push: 0, blend: 0 },
-    ];
-    if (this.variant === 'sydney') {
-      const au = this.ctx.audio;
-      const b0 = Math.ceil(au.beatAt(ws(0)) + 0.5);
-      const hold = [2, 4].map((k) => au.timeOfBeat(b0 + k)).filter((x) => x < ws(1) - 0.3);
-      return [
-      { t: s, zoom: 1.9, focus: 'caret', rot: 0, push: 0.04, blend: 0 },
-      { t: ws(0), zoom: 1.6, focus: 'caret', rot: 0, push: 0.06, blend: 0 },
-      ...hold.map((t, i): Shot => ({ t, zoom: i === 0 ? 2.5 : 1.25, focus: i === 0 ? 'caret' : 'typed', rot: i === 0 ? -0.03 : 0.02, push: 0.06, blend: 0, dy: i === 0 ? 30 : 0 })),
-      { t: ws(1), zoom: 1.32, focus: 'typed', rot: 0.012, push: 0.05, blend: 0 },
-      { t: ws(3), zoom: 1.75, focus: 'caret', rot: -0.01, push: 0.05, blend: 0 },
-      { t: ws(4), zoom: 1.05, focus: 'field', rot: 0, push: 0.03, blend: 0, dy: 40 },
-      { t: this.tEnter, zoom: 0.92, focus: 'field', rot: 0, push: 0.05, blend: 0.25, dy: 150 },
-    ];
+    switch (this.look) {
+      case 'throat': return [
+        { t: s, zoom: 2.7, focus: 'caret', rot: 0, push: 0.05, blend: 0 },
+        { t: ws(0), zoom: 2.25, focus: 'caret', rot: 0, push: 0.03, blend: 0 },
+        { t: ws(1), zoom: 1.5, focus: 'typed', rot: -0.018, push: 0.04, blend: 0 },
+        { t: ws(3), zoom: 2.0, focus: 'caret', rot: 0.014, push: 0.05, blend: 0 },
+        { t: ws(5), zoom: 1.08, focus: 'field', rot: 0, push: 0.035, blend: 0 },
+        { t: this.tEnter, zoom: 1.12, focus: 'field', rot: 0, push: 0, blend: 0 },
+      ];
+      case 'bars': {
+        // the first word is held for bars: reframe on beats 2, 4 (and 6) of the hold
+        const b0 = Math.ceil(au.beatAt(ws(0)) + 0.5);
+        const hold = [2, 4, 6].map((k) => au.timeOfBeat(b0 + k)).filter((x) => x < ws(1) - 0.3);
+        const hs: Shot[] = hold.map((t, i) => (i === 0
+          ? { t, zoom: 2.5, focus: 'caret', rot: -0.03, push: 0.06, blend: 0, dy: 30 }
+          : i === 1 ? { t, zoom: 1.25, focus: 'typed', rot: 0.02, push: 0.06, blend: 0 }
+            : { t, zoom: 3.1, focus: 'caret', rot: 0.012, push: 0.08, blend: 0, dy: 50 }));
+        return [
+          { t: s, zoom: 1.9, focus: 'caret', rot: 0, push: 0.04, blend: 0 },
+          { t: ws(0), zoom: 1.6, focus: 'caret', rot: 0, push: 0.06, blend: 0 },
+          ...hs,
+          { t: ws(1), zoom: 1.32, focus: 'typed', rot: 0.012, push: 0.05, blend: 0 },
+          { t: ws(3), zoom: 1.75, focus: 'caret', rot: -0.01, push: 0.05, blend: 0 },
+          { t: ws(4), zoom: 1.05, focus: 'field', rot: 0, push: 0.03, blend: 0, dy: 40 },
+          { t: this.tEnter, zoom: 0.92, focus: 'field', rot: 0, push: 0.05, blend: 0.25, dy: 150 },
+        ];
+      }
+      case 'float': return [
+        // first frame: the caret sits where leftturn's CDR slot folds into it (screen ≈ 1150, 631)
+        { t: s, zoom: 1.6, focus: 'caret', rot: 0.0, push: 0.02, blend: 0, dy: 8.7 },
+        { t: ws(0), zoom: 1.45, focus: 'caret', rot: 0.0, push: 0.0, blend: 1.2 },
+        { t: ws(2), zoom: 1.2, focus: 'typed', rot: 0.0, push: 0.0, blend: 1.4 },
+        { t: ws(4), zoom: 1.0, focus: 'field', rot: 0.0, push: 0.0, blend: 1.6 },
+        { t: ws(5), zoom: 0.9, focus: 'field', rot: 0.0, push: 0.0, blend: 1.4, dy: -60 },
+      ];
+      case 'split': return [
+        // quick-fire: a hard reframe on every word
+        { t: s, zoom: 1.15, focus: 'field', rot: 0, push: 0.05, blend: 0 },
+        { t: ws(0), zoom: 2.3, focus: 'caret', rot: -0.02, push: 0.1, blend: 0 },
+        { t: ws(1), zoom: 1.5, focus: 'typed', rot: 0.016, push: 0.1, blend: 0 },
+        { t: ws(2), zoom: 2.7, focus: 'caret', rot: 0, push: 0.12, blend: 0, dy: 20 },
+        { t: ws(3), zoom: 1.3, focus: 'typed', rot: -0.014, push: 0.1, blend: 0 },
+        { t: ws(4), zoom: 2.2, focus: 'caret', rot: 0.02, push: 0.12, blend: 0 },
+        { t: ws(5), zoom: 1.02, focus: 'field', rot: 0, push: 0.06, blend: 0 },
+        { t: this.tEnter, zoom: 1.0, focus: 'field', rot: 0, push: 0, blend: 0 },
+      ];
+      case 'crowd': return [
+        // slow push toward the caret as the room runs out; lands on the identity frame (hook 5's wall)
+        { t: s, zoom: 0.92, focus: 'field', rot: 0, push: 0.01, blend: 0 },
+        { t: ws(0), zoom: 1.3, focus: 'caret', rot: 0, push: 0.0, blend: 1.3 },
+        { t: ws(2), zoom: 1.65, focus: 'caret', rot: 0, push: 0.0, blend: 1.0 },
+        { t: ws(3), zoom: 2.05, focus: 'caret', rot: 0, push: 0.02, blend: 0.9 },
+        { t: ws(5), zoom: 1.5, focus: 'typed', rot: 0, push: 0.0, blend: 0.6 },
+        { t: this.tEnter, zoom: 1.0, focus: 'field', rot: 0, push: 0, blend: 0.28 },
+      ];
     }
-    // gato: slow, floating; no cuts, only long eases
-    return [
-      { t: s, zoom: 1.6, focus: 'caret', rot: 0.0, push: 0.02, blend: 0 },
-      { t: ws(0), zoom: 1.45, focus: 'caret', rot: 0.0, push: 0.0, blend: 1.2 },
-      { t: ws(2), zoom: 1.2, focus: 'typed', rot: 0.0, push: 0.0, blend: 1.4 },
-      { t: ws(4), zoom: 1.0, focus: 'field', rot: 0.0, push: 0.0, blend: 1.6 },
-      { t: ws(5), zoom: 0.9, focus: 'field', rot: 0.0, push: 0.0, blend: 1.4, dy: -20 },
-    ];
   }
 
   /** Caret x (UI space) with a smooth follow (for the camera). */
@@ -181,7 +243,7 @@ export default class Prompt extends Scene {
   }
 
   private focusOf(sh: Shot, t: number, z: number): { x: number; y: number } {
-    const fcy = (this.fy0 + this.fy1) / 2 - 40 + (sh.dy ?? 0);
+    const fcy = this.cy - 40 + (sh.dy ?? 0);
     if (sh.focus === 'caret') return { x: this.caretX(t, 0.45) - 180 / z, y: fcy - 40 / z };
     if (sh.focus === 'typed') return { x: (this.tx0 + this.caretX(t, 0.45)) / 2 + 40, y: fcy - 20 };
     if (sh.focus === 'key') return { x: this.keyX, y: fcy };
@@ -207,31 +269,56 @@ export default class Prompt extends Scene {
     return cur;
   }
 
+  // ------------------------------------------------------------------ crowd geometry
+  /** Words sung so far, each eased in (0..nWords). */
+  private wordSteps(t: number) {
+    let s = 0;
+    for (const w of this.line.words) s += ease.outExpo(clamp((t - w.start) / 0.25));
+    return s / this.line.words.length;
+  }
+  /** The crowd look: the field shrinks around the caret, the scrollback presses in. */
+  private crowdGeom(t: number) {
+    const k = this.wordSteps(t);
+    const h = lerp(128, 78, k);
+    this.fy0 = this.cy - h / 2; this.fy1 = this.cy + h / 2;
+    const kk = prog(t, this.tFirst, this.tLast + 0.4, ease.inOutCubic);
+    this.fx1 = lerp(this.fx1Base, Math.min(this.fx1Base, this.caretX(t, 0.45) + 132), kk);
+    this.keyX = this.fx1 - 60 - 18 * (1 - kk);
+    // ⏎: the walls close over the plea (meeting at the frame's centre line, camera at identity)
+    const e = ease.inCubic(prog(t, this.tEnter + 0.02, this.tEnd - 0.02));
+    const spEnd = (H / 2 - 5) / (WALL.n - 0.28);
+    const sp = lerp(lerp(30, 21, k), spEnd, e);
+    const yU = lerp(this.fy0 - lerp(40, 10, k), H / 2, e);
+    const yL = lerp(this.fy1 + lerp(112, 92, k), H / 2, e);
+    return { sp, yU, yL, e };
+  }
+
   // ------------------------------------------------------------------ render
   render(f: Frame, out: THREE.WebGLRenderTarget): PostOverrides {
     const { renderer } = this.ctx;
-    const t = f.t, v = this.variant;
+    const t = f.t, look = this.look;
+    const crowd = look === 'crowd' ? this.crowdGeom(t) : null;
     const cam = this.camAt(t);
     // micro reactions: token arrivals kick the camera a hair
     let kick = 0;
     for (const k of this.toks) if (k.first) kick = Math.max(kick, k.t0 <= t ? Math.pow(0.5, (t - k.t0) / 0.07) : 0);
     const beatPulse = Math.pow(1 - f.beatPhase, 5);
-    let zoom = cam.zoom * (1 + 0.012 * kick * (v === 'gato' ? 0.2 : 1) + (v === 'gato' ? 0 : 0.004 * beatPulse));
+    const calm = look === 'float' ? 0.2 : look === 'crowd' ? 0.4 * (1 - smoothstep(this.tEnter, this.tEnter + 0.2, t)) : look === 'split' ? 1.6 : 1;
+    let zoom = cam.zoom * (1 + 0.012 * kick * calm + (look === 'float' ? 0 : 0.004 * beatPulse * Math.min(1, calm)));
     let rot = cam.rot;
     let cx = cam.cx, cy = cam.cy;
     // ⏎ phases
-    const ent = clamp((t - this.tEnter) / Math.max(0.05, this.tEnd - this.tEnter));
-    if (v === 'chatgpt' && t >= this.tEnter) {
+    if (look === 'throat' && t >= this.tEnter) {
       // the prompt is swallowed: sucked toward the throat's centre
       const k = ease.inCubic(clamp((t - this.tEnter - 0.04) / (this.tEnd - this.tEnter - 0.04)));
       zoom *= 1 - 0.93 * k;
       rot += 0.9 * k * k;
-      // sucked toward the pit (the throat's vanishing point sits near frame centre)
       cx = lerp(cx, W / 2, k); cy = lerp(cy, H / 2 - 40, k);
     }
-    if (v === 'gato') {
-      // floating: slow drift and bob
-      cx += noise1(t * 0.23, 3) * 22; cy += noise1(t * 0.19, 5) * 14; rot += noise1(t * 0.15, 9) * 0.012;
+    if (look === 'float') {
+      // floating: slow drift and bob (eased in, so the first frame matches leftturn's hand-off)
+      const d = smoothstep(this.ctx.start, this.ctx.start + 1.2, t);
+      cx += noise1(t * 0.23, 3) * 22 * d; cy += noise1(t * 0.19, 5) * 14 * d; rot += noise1(t * 0.15, 9) * 0.012 * d;
     }
 
     // ---- UI layer
@@ -242,19 +329,25 @@ export default class Prompt extends Scene {
     const hair = 1 / zoom;
     const toScreen = (x: number, y: number) => ({ x: cs * (x - cx) - sn * (y - cy) + W / 2, y: sn * (x - cx) + cs * (y - cy) + H / 2 });
 
-    const shut = v === 'sydney' ? ease.inQuart(prog(t, this.tShut - 0.12, this.tShut - 0.005)) : 0;
-    this.drawField(c, t, hair, ent);
+    const shut = look === 'bars' ? ease.inQuart(prog(t, this.tShut - 0.12, this.tShut - 0.005)) : 0;
+    if (crowd) {
+      drawWall(c, this.rows, crowd.yU, -1, crowd.sp);
+      drawWall(c, this.rows, crowd.yL, 1, crowd.sp);
+      // the plea is squashed between the closing walls
+      if (crowd.e > 0) { c.translate(0, H / 2); c.scale(1, Math.max(0.001, 1 - crowd.e)); c.translate(0, -H / 2); }
+    }
+    this.drawField(c, t, hair);
     this.drawTokens(c, t, hair);
     this.drawPopups(c, t, hair);
-    const caret = this.drawCaret(c, t, hair, ent);
+    const caret = this.drawCaret(c, t);
     let smileHead: { x: number; y: number } | null = null;
-    if (v === 'sydney') smileHead = this.drawReply(c, t, hair);
+    if (look === 'bars') smileHead = this.drawReply(c, t);
     L.upload();
 
     // ---- composite
     const u = this.comp.u;
     u.t!.value = t; u.lt!.value = f.lt; u.beat!.value = beatPulse;
-    if (v === 'chatgpt') {
+    if (look === 'throat') {
       const lt = t - this.ctx.start, dur = this.tEnd - this.ctx.start;
       const rushK = clamp((t - this.tEnter) / (this.tEnd - this.tEnter));
       u.camZ!.value = lt * 0.42 + 2.2 * Math.pow(lt / dur, 2.4) + 16 * Math.pow(rushK, 2.2);
@@ -268,7 +361,7 @@ export default class Prompt extends Scene {
       u.rot!.value = t * 0.05 + 0.4 * Math.pow(rushK, 2);
       u.zoomBlur!.value = 0.18 * Math.pow(rushK, 2);
     }
-    if (v === 'sydney') {
+    if (look === 'bars') {
       const b0 = this.ctx.audio.beatAt(this.ctx.start);
       const nb = Math.max(1, Math.round(this.ctx.audio.beatAt(this.tEnd) - b0));
       const bi = f.beat - b0;
@@ -282,14 +375,21 @@ export default class Prompt extends Scene {
       u.shut!.value = shut;
       u.light!.value = kick;
     }
-    if (v === 'gato') {
-      u.glow!.value = 0.5 + 0.5 * smoothstep(this.tFirst - 0.5, this.tFirst + 1, t);
+    if (look === 'float') u.glow!.value = 0.5 + 0.5 * smoothstep(this.tFirst - 0.5, this.tFirst + 1, t);
+    if (look === 'crowd') u.glow!.value = 1 - 0.8 * (crowd?.e ?? 0);
+    let splitK = 0;
+    if (look === 'split') {
+      // ⏎: B is the negative of A; the two halves slip apart along the seam
+      splitK = ease.outExpo(prog(t, this.tEnter, this.tEnter + 0.16));
+      u.split!.value = splitK * (1 + 0.25 * Math.pow(0.5, Math.max(0, t - this.tEnter) / 0.05));
+      u.inv!.value = t >= this.tEnter ? 1 : 0;
+      u.seam!.value = t >= this.tEnter ? 1 : 0.25 * kick;
     }
     this.comp.render(renderer, out);
 
     // ---- glow pass: the caret spark / the smile-drawing spark
     this.glow.clear();
-    if (caret && v !== 'gato') {
+    if (caret && look !== 'float') {
       const p = toScreen(caret.x, caret.y);
       if (caret.hot > 0.01) sparkHead(this.glow, p.x, p.y, t, 0.5 * Math.sqrt(zoom), caret.hot);
     }
@@ -301,38 +401,48 @@ export default class Prompt extends Scene {
         return h ? toScreen(h.x, h.y) : null;
       }, { rate: 110, life: 0.35, speed: 200, intensity: 0.9, seed: 5 });
     }
+    if (look === 'split' && t >= this.tEnter) {
+      // a spark runs down the seam on ⏎
+      const k = prog(t, this.tEnter, this.tEnd - 0.03, ease.outCubic);
+      sparkHead(this.glow, W / 2, lerp(-20, H + 20, k), t, 0.9, 1 - 0.6 * k);
+    }
     if (this.glow.count) this.glow.render(renderer, out);
 
     // ---- post
     const o: PostOverrides = { bloomThreshold: 0.95, bloomKnee: 0.25, bloom: 0.7, vignette: 0.45 };
-    if (v === 'chatgpt') {
+    if (look === 'throat') {
       const rushK = clamp((t - this.tEnter) / (this.tEnd - this.tEnter));
       o.flash = 0.9 * Math.pow(prog(t, this.tEnd - 0.1, this.tEnd - 1 / 60), 2);
       o.shake = [noise1(t * 40, 1) * 9 * rushK * rushK, noise1(t * 40, 2) * 9 * rushK * rushK];
       o.bloom = 0.7 + 0.8 * rushK;
       o.ca = 1.2 + 5 * rushK * rushK;
     }
-    if (v === 'sydney') {
-      o.shake = [noise1(t * 30, 3) * 6 * shut, 0];
+    if (look === 'bars') o.shake = [noise1(t * 30, 3) * 6 * shut, 0];
+    if (look === 'float') { o.vignette = 0.6; o.grain = 0.065; }
+    if (look === 'split') {
+      const hit = t >= this.tEnter ? Math.pow(0.5, (t - this.tEnter) / 0.05) : 0;
+      o.shake = [noise1(t * 50, 4) * (4 * kick + 14 * hit), noise1(t * 50, 5) * (3 * kick + 8 * hit)];
+      o.ca = 1.2 + 3 * hit;
+      o.vignette = 0.35 * (1 - splitK);
     }
-    if (v === 'gato') { o.vignette = 0.6; o.grain = 0.065; }
+    if (look === 'crowd') { o.vignette = 0.55; o.grain = 0.06; }
     return o;
   }
 
   // ------------------------------------------------------------------ drawing
-  private drawField(c: CanvasRenderingContext2D, t: number, hair: number, ent: number) {
-    const v = this.variant;
+  private drawField(c: CanvasRenderingContext2D, t: number, hair: number) {
+    const v = this.variant, look = this.look, float = look === 'float';
     const { fx0, fx1, fy0, fy1 } = this;
-    const appear = v === 'gato' ? smoothstep(this.ctx.start, this.ctx.start + 0.8, t) : 1;
+    const appear = float ? smoothstep(this.ctx.start, this.ctx.start + 0.8, t) : 1;
     c.save();
     c.globalAlpha = appear;
     // an ink slot cut into the plate, behind the text
-    c.fillStyle = rgba('ink', v === 'gato' ? 0.0 : 0.9);
+    c.fillStyle = rgba('ink', float ? 0.0 : look === 'crowd' ? 1 : 0.9);
     c.fillRect(fx0, fy0, fx1 - fx0, fy1 - fy0);
     // hairline field
     c.lineWidth = hair;
-    c.strokeStyle = rgba('bone', v === 'gato' ? 0.28 : 0.42);
-    if (v === 'gato') {
+    c.strokeStyle = rgba('bone', float ? 0.28 : 0.42);
+    if (float) {
       // fragile: the outline is broken into dashes that breathe
       c.setLineDash([22, 9 + 6 * (0.5 + 0.5 * Math.sin(t * 0.9))]);
       c.lineDashOffset = -t * 6;
@@ -378,12 +488,15 @@ export default class Prompt extends Scene {
     c.textAlign = 'right';
     c.letterSpacing = '3px';
     c.font = font(F.mono(500), 13);
-    c.fillStyle = rgba('bone', 0.6);
-    c.fillText(`CONTEXT ${String(nTok).padStart(2, '0')} / 8192`, fx1, fy1 + 30);
+    const full = look === 'crowd';
+    const ctxN = full ? 8192 - (this.toks.length - nTok) - (t >= this.tEnter ? 0 : 1) : nTok;
+    const ctxTxt = full ? `CONTEXT ${ctxN.toLocaleString('en-US')} / 8,192` : `CONTEXT ${String(ctxN).padStart(2, '0')} / 8192`;
+    c.fillStyle = full && ctxN >= 8190 ? rgba('signal', 0.95) : rgba('bone', 0.6);
+    c.fillText(ctxTxt, fx1, fy1 + 30);
     c.letterSpacing = '0px';
     c.font = font(F.mono(400), 13);
     c.fillStyle = rgba('ash', 0.75);
-    const sendTxt = ' send  (irreversible)';
+    const sendTxt = full ? ' send  (no room)' : look === 'split' ? ' send  (no take-backs)' : ' send  (irreversible)';
     c.fillText(sendTxt, fx1, fy1 + 52);
     c.textAlign = 'left';
     // ⏎ (not in Plex Mono): the keycap's return arrow, drawn small in the cell before "send"
@@ -403,9 +516,9 @@ export default class Prompt extends Scene {
     // keycap
     const press = t >= this.tEnter ? Math.pow(0.5, (t - this.tEnter) / 0.12) : 0;
     const armed = t >= this.tLast + 0.1 ? 1 : 0;
-    const kx = this.keyX, ky = (fy0 + fy1) / 2, ks = 30 * (1 - 0.1 * press);
+    const kx = this.keyX, ky = (fy0 + fy1) / 2, ks = Math.min(30, (fy1 - fy0) / 2 - 6) * (1 - 0.1 * press);
     c.lineWidth = hair * (1 + armed);
-    const lit = t >= this.tEnter ? (v === 'gato' ? 0.35 + 0.3 * press : 1) : 0;
+    const lit = t >= this.tEnter ? (float ? 0.35 + 0.3 * press : 1) : 0;
     if (lit > 0) { c.fillStyle = rgba('signal', lit); c.fillRect(kx - ks, ky - ks, ks * 2, ks * 2); }
     c.strokeStyle = lit > 0 ? rgba('signal', 1) : rgba('bone', 0.35 + 0.35 * armed * (0.5 + 0.5 * Math.cos(t * TAU * 2)));
     c.strokeRect(kx - ks, ky - ks, ks * 2, ks * 2);
@@ -419,12 +532,11 @@ export default class Prompt extends Scene {
     c.moveTo(kx - a + a * 0.45, ky + a * 0.25 - a * 0.45); c.lineTo(kx - a, ky + a * 0.25); c.lineTo(kx - a + a * 0.45, ky + a * 0.25 + a * 0.45);
     c.stroke();
     c.restore();
-    void ent;
   }
 
-  /** Per-glyph drift for the gato variant (UI px offset + rotation). */
-  private drift(ci: number, t: number, _typedAt: number): { dx: number; dy: number; r: number } {
-    if (this.variant !== 'gato') return { dx: 0, dy: 0, r: 0 };
+  /** Per-glyph drift for the float look: once typed, the letters rise away like smoke from a lamp. */
+  private drift(ci: number, t: number): { dx: number; dy: number; r: number } {
+    if (this.look !== 'float') return { dx: 0, dy: 0, r: 0 };
     const tok = this.toks.find((k) => ci >= k.ci - (k.space ? 1 : 0) && ci < k.ci + k.n) ?? this.toks[this.toks.length - 1]!;
     const ts = tok.word.end + 0.35;
     const age = t - ts;
@@ -432,16 +544,19 @@ export default class Prompt extends Scene {
     const last = this.text.length - 1;
     const D = (last - ci) * this.adv; // distance from the held letter
     const k = Math.pow(age, 1.3) * smoothstep(0, 0.8, age);
+    const far = 0.35 + Math.min(1, D / 700);
     return {
-      dx: -D * 0.045 * k,
-      dy: ((hash(ci, 11) - 0.5) * 34 - 10 * (D / 900)) * k + Math.sin(t * 0.8 + ci * 1.7) * 2 * Math.min(1, age),
-      r: (hash(ci, 13) - 0.5) * 0.16 * k * Math.min(1, D / 200),
+      // a slow curl: each letter sways on its own phase as it climbs
+      dx: -D * 0.02 * k + Math.sin(age * 1.6 + ci * 0.9) * 16 * Math.min(1, k) * far,
+      dy: -(26 + 34 * hash(ci, 11)) * k * far + Math.sin(t * 0.8 + ci * 1.7) * 2 * Math.min(1, age),
+      r: (hash(ci, 13) - 0.5) * 0.22 * k * Math.min(1, D / 200),
     };
   }
 
   private drawTokens(c: CanvasRenderingContext2D, t: number, hair: number) {
-    const v = this.variant;
+    const look = this.look, float = look === 'float';
     const adv = this.adv, base = this.base;
+    const glitch = GLITCH[this.variant];
     c.save();
     c.font = font(this.fam, FS);
     c.textBaseline = 'alphabetic';
@@ -456,11 +571,11 @@ export default class Prompt extends Scene {
       const cool = prog(t, w.end, w.end + 0.35);
       const flash = Math.pow(0.5, age / 0.06);
       const drop = (1 - ease.outExpo(clamp(age / 0.18))) * -10;
-      const fade = v === 'gato' ? 1 - 0.55 * prog(t, k.t0 + 2.2, k.t0 + 5) : 1;
+      const fade = float ? 1 - 0.55 * prog(t, k.t0 + 2.2, k.t0 + 5) : 1;
       // token bracket (with the leading space inside it) + id
       const by = base + 18;
       const bw = x1 - x0 - 6;
-      const bAlpha = (v === 'gato' ? 0.3 : 0.4) * fade * (1 - prog(t, k.t0 + 0.8, k.t0 + 3) * 0.4);
+      const bAlpha = (float ? 0.3 : 0.4) * fade * (1 - prog(t, k.t0 + 0.8, k.t0 + 3) * 0.4);
       c.fillStyle = rgba('bone', bAlpha);
       c.fillRect(x0 + 3, by, bw, hair);
       c.fillRect(x0 + 3, by - 5, hair, 5);
@@ -470,22 +585,20 @@ export default class Prompt extends Scene {
       c.fillText(String(k.id), x0 + 5, by + 14);
       c.font = font(this.fam, FS);
       if (k.space) { c.fillStyle = rgba('graphite', 0.9 * fade); c.fillRect(x0 + adv * 0.5 - 2, base - FS * 0.2, 3, 3); }
-      // glyphs
-      let txt = k.text, gx0 = 0;
-      if (v === 'sydney' && k.first && k.word === this.line.words[0] && t > k.t0 + 0.5 && t < w.end - 0.3) {
+      // glyphs (the bars look: the held first word flickers to its glitch on odd beats)
+      let txt = k.text, gl = false;
+      if (glitch && w === this.line.words[0] && t > w.start + 0.5 && t < w.end - 0.3) {
         const b = this.ctx.audio.beatAt(t);
-        if (b - Math.floor(b) < 0.075 && Math.floor(b) % 2 === 1) { txt = 'Bing,'; gx0 = 7; }
+        if (b - Math.floor(b) < 0.075 && Math.floor(b) % 2 === 1) { txt = glitch.slice(k.ci, k.ci + k.n); gl = true; }
       }
       for (let i = 0; i < Math.min(k.n, txt.length); i++) {
         const ch = txt[i]!;
-        const d = this.drift(k.ci + i, t, k.t0);
-        const gx = xv + i * adv + d.dx + gx0, gy = base + drop + d.dy;
+        const d = this.drift(k.ci + i, t);
+        const gx = xv + i * adv + d.dx, gy = base + drop + d.dy;
         let col: string;
-        if (gx0) col = rgba('bone', 0.9);
-        else if (sung || cool < 1) {
-          const a = 1;
-          col = flash > 0.05 ? rgba('ember', a) : cool > 0 ? mixc('signal', 'bone', cool) : rgba('signal', a);
-        } else col = rgba('bone', 0.95 * fade);
+        if (gl) col = ch !== k.text[i] ? rgba('bone', 1) : rgba('signal', 1);
+        else if (sung || cool < 1) col = flash > 0.05 ? rgba('ember', 1) : cool > 0 ? mixc('signal', 'bone', cool) : rgba('signal', 1);
+        else col = rgba('bone', 0.95 * fade);
         c.fillStyle = col;
         if (d.r !== 0) {
           c.save(); c.translate(gx + adv / 2, gy - FS * 0.35); c.rotate(d.r); c.fillText(ch, -adv / 2, FS * 0.35); c.restore();
@@ -502,7 +615,7 @@ export default class Prompt extends Scene {
       const x0 = this.tx0 + (first.ci - (first.space ? 1 : 0)) * adv + 3;
       const x1 = this.tx0 + (lastK.ci + lastK.n) * adv - 3;
       const done = prog(t, w.end, w.end + 0.4);
-      const alpha = (v === 'gato' ? 0.7 : 1) * (1 - 0.75 * done);
+      const alpha = (float ? 0.7 : 1) * (1 - 0.75 * done);
       c.fillStyle = rgba('signal', alpha);
       c.fillRect(x0, base + 17, (x1 - x0) * p, 3);
     }
@@ -510,25 +623,30 @@ export default class Prompt extends Scene {
   }
 
   private drawPopups(c: CanvasRenderingContext2D, t: number, hair: number) {
-    const v = this.variant;
+    const look = this.look, cfg = this.cfg, meta = META[this.variant];
+    const split = look === 'split';
     for (const k of this.toks) {
       if (!k.dist) continue;
-      const a0 = k.t0 - POP_PRE, a1 = k.tPopEnd + 0.12;
+      const a0 = k.t0 - cfg.popPre, a1 = k.tPopEnd + cfg.popCol;
       if (t < a0 || t > a1) continue;
-      const built = clamp((t - a0) / POP_PRE); // flicker phase (computing)
+      const built = clamp((t - a0) / cfg.popPre); // flicker phase (computing)
       const picked = t >= k.t0;
-      const collapse = ease.inCubic(prog(t, k.tPopEnd, k.tPopEnd + 0.12));
+      const collapse = ease.inCubic(prog(t, k.tPopEnd, k.tPopEnd + cfg.popCol));
       const ax = this.tx0 + k.ci * this.adv;
-      const ay = this.fy0 - 26;
       const rows = k.dist;
       const rh = 21, headH = 20;
       const hgt = headH + rows.length * rh + 6;
-      const pw = 290;
+      // quick-fire popups overlap: every other one sits a level higher
+      const ay = this.fy0 - 26 - (k.raise ? hgt + 10 : 0);
+      const pw = cfg.popW;
+      // the waverer cannot decide: its pick flips on the 16ths until ⏎
+      let pick = k.pick;
+      if (k.waver && picked && t < this.tEnter) pick = Math.floor(this.ctx.audio.beatAt(t) * 4) % 2;
       c.save();
       // collapse toward the anchor
       c.translate(ax, ay);
       c.scale(1, 1 - collapse);
-      c.globalAlpha = (v === 'gato' ? 0.85 : 1) * (1 - collapse * 0.6);
+      c.globalAlpha = (look === 'float' ? 0.85 : 1) * (1 - collapse * 0.6);
       // leader line to the token
       c.fillStyle = rgba('bone', 0.5);
       c.fillRect(0, 0, hair, this.base - FS * 0.82 - ay);
@@ -543,19 +661,19 @@ export default class Prompt extends Scene {
       c.textBaseline = 'alphabetic';
       c.font = font(F.mono(400), 11);
       c.fillStyle = rgba('ash', 0.85);
-      c.fillText('p( next | context )', 10, -hgt + 14);
+      c.fillText(meta.head ?? 'p( next | context )', 10, -hgt + 14);
       c.textAlign = 'right';
-      c.fillText(picked ? 'sampled' : 'computing…', pw - 8, -hgt + 14);
+      c.fillText(picked ? (k.waver && t < this.tEnter ? '…' : meta.done ?? 'sampled') : meta.busy ?? 'computing…', pw - 8, -hgt + 14);
       c.textAlign = 'left';
       const pmax = rows[0]![1];
       rows.forEach(([txt, p0], i) => {
-        const unstable = v === 'sydney' && picked && t > k.t0 + 0.25;
+        const unstable = look === 'bars' && picked && t > k.t0 + 0.25;
         const p = unstable ? clamp(p0 * (1 + 0.5 * noise1(t * 2.7 + i * 7.3, k.id)), 0.001, 0.99) : p0;
         const y = -hgt + headH + (i + 1) * rh - 5;
-        const isPick = i === k.pick;
+        const isPick = i === pick;
         const fl = hash(i, frameIdx(t), k.id) < 0.25 + 0.75 * built;
         if (!picked && !fl) return;
-        const jitter = picked ? 1 : 0.3 + 0.7 * built + (hash(i, Math.floor(t * 30), 3) - 0.5) * 0.5 * (1 - built);
+        const jitter = picked ? 1 : 0.3 + 0.7 * built + (hash(i, frameIdx(t) >> 1, 3) - 0.5) * 0.5 * (1 - built);
         const on = picked && isPick;
         const flashRow = on ? Math.pow(0.5, (t - k.t0) / 0.08) : 0;
         if (on) { c.fillStyle = rgba('signal', 0.14 + 0.5 * flashRow); c.fillRect(1, y - 15, pw - 1, rh - 1); }
@@ -564,45 +682,45 @@ export default class Prompt extends Scene {
         const cell = measure(' ', F.mono(500), 14);
         // the pick marker (▸ is not in Plex Mono): a small triangle drawn in the first cell
         if (on) triangle(c, 8 + cell * 0.5, y - 4.4, 3.6);
-        c.fillText('  ' + txt, 8, y);
-        const bx = 160, bwm = 80;
+        c.fillText((split ? (i === 0 ? '  A ' : '  B ') : '  ') + txt, 8, y);
+        const bx = split ? 128 : 160, bwm = split ? 56 : 80;
         const bw = clamp((bwm * p) / pmax * clamp(jitter, 0, 1.2), 1.5, bwm);
         c.fillStyle = on ? rgba('signal', 1) : rgba('bone', picked ? 0.3 : 0.45);
         c.fillRect(bx, y - 9, bw, 7);
         c.font = font(F.mono(400), 12);
         c.fillStyle = on ? rgba('signal', 1) : rgba('ash', 0.8);
         c.textAlign = 'right';
-        c.fillText(p >= 0.1 ? p.toFixed(2) : p >= 0.01 ? p.toFixed(2) : p.toFixed(3), pw - 8, y);
+        c.fillText(p >= 0.01 ? p.toFixed(2) : p.toFixed(3), pw - 8, y);
         c.textAlign = 'left';
       });
       c.restore();
     }
   }
 
-  private drawCaret(c: CanvasRenderingContext2D, t: number, hair: number, ent: number) {
-    const v = this.variant;
+  private drawCaret(c: CanvasRenderingContext2D, t: number) {
+    const look = this.look, float = look === 'float';
     const last = this.toks.filter((k) => k.t0 <= t).pop();
     let x = this.caretX(t, 0.0) + 4;
     const sinceTok = last ? t - last.t0 : 99;
     const beat = this.ctx.audio.beatAt(t);
     const bph = beat - Math.floor(beat);
     let on = sinceTok < 0.45 || bph < 0.5;
-    if (v === 'chatgpt' && t > this.tEnter + 0.05) on = false;
+    if ((look === 'throat' || look === 'split') && t > this.tEnter + 0.05) on = false;
+    if (look === 'crowd' && t > this.tEnter) on = true; // squeezed, but still there
     let y0 = this.base - FS * 0.78, y1 = this.base + FS * 0.12;
-    if (v === 'gato' && last) {
+    if (float && last) {
       // the cursor holds on to the last letter: it follows its drift
-      const d = this.drift(this.text.length - 1, t, last.t0);
+      const d = this.drift(this.text.length - 1, t);
       x += d.dx; y0 += d.dy; y1 += d.dy;
       on = true;
     }
     if (!on) return null;
-    c.fillStyle = rgba('signal', v === 'gato' ? 0.9 : 1);
+    c.fillStyle = rgba('signal', float ? 0.9 : 1);
     c.fillRect(x, y0, 3.5, y1 - y0);
-    void hair; void ent;
-    return { x: x + 1.75, y: y0 + 4, hot: v === 'gato' ? 0 : sinceTok < 0.3 ? 0.35 * Math.pow(0.5, sinceTok / 0.1) : 0 };
+    return { x: x + 1.75, y: y0 + 4, hot: float ? 0 : sinceTok < 0.3 ? 0.35 * Math.pow(0.5, sinceTok / 0.1) : 0 };
   }
 
-  // ---- Sydney: reply + the smile curve
+  // ---- the bars look: reply + the smile curve
   private smileGeom() {
     return { cx: (this.fx0 + this.fx1) / 2, cy: this.fy1 - 190, R: 800 };
   }
@@ -614,7 +732,7 @@ export default class Prompt extends Scene {
     const a = lerp(MASK.smileA1 + 0.05, MASK.smileA0 - 0.05, k);
     return { x: g.cx + Math.cos(a) * g.R, y: g.cy + Math.sin(a) * g.R * 0.55 };
   }
-  private drawReply(c: CanvasRenderingContext2D, t: number, hair: number) {
+  private drawReply(c: CanvasRenderingContext2D, t: number) {
     if (t < this.tEnter) return null;
     const rx = this.tx0, ry = this.fy1 + 112;
     c.save();
@@ -656,7 +774,6 @@ export default class Prompt extends Scene {
       if (k < 1) head = this.smileHeadAt(t);
     }
     c.restore();
-    void hair;
     return head;
   }
 }
@@ -690,9 +807,9 @@ vec3 overUI(vec3 col, vec2 uv) {
   return mix(col, c, u.a * uiAlpha);
 }`;
 
-const SHADERS: Record<Variant, string> = {
+const SHADERS: Record<Look, string> = {
   // An engraved throat: rings (cartilage) and longitudinal folds, seen down its length.
-  chatgpt: /* glsl */ `
+  throat: /* glsl */ `
 uniform float t, lt, aspect, camZ, glow, rot, rush, swallow, beat;
 uniform vec2 vp;
 ${UI_OVER}
@@ -745,7 +862,7 @@ void main() {
   fragColor = vec4(col, 1.0);
 }`,
   // Vertical bars in front of the prompt, closing in on the beat.
-  sydney: /* glsl */ `
+  bars: /* glsl */ `
 uniform float t, lt, aspect, spacing, barW, barCx, shut, beat, light;
 ${UI_OVER}
 float barsCov(float x, float w) {
@@ -782,7 +899,7 @@ void main() {
   fragColor = vec4(col, 1.0);
 }`,
   // Alone in the dark: a faint pool of light and a few slow motes.
-  gato: /* glsl */ `
+  float: /* glsl */ `
 uniform float t, lt, aspect, glow, beat;
 ${UI_OVER}
 void main() {
@@ -798,6 +915,40 @@ void main() {
   float d = length(f - o);
   float on = step(0.86, hash12(id + 7.0));
   col += C_BONE * on * 0.18 * smoothstep(0.035, 0.0, d) * glow;
+  col = overUI(col, vUv);
+  fragColor = vec4(col, 1.0);
+}`,
+  // One seam down the middle of the frame: A on the left, B on the right. On ⏎ the right half turns
+  // into the negative of the left and the two halves slip apart along the seam.
+  split: /* glsl */ `
+uniform float t, aspect, split, inv, seam, beat;
+${UI_OVER}
+void main() {
+  vec2 px = FRAG_PX;
+  float right = step(${W / 2}.0, px.x);
+  vec2 uv = vUv + vec2(0.0, (right * 2.0 - 1.0) * split * 0.024);
+  vec2 p = (vUv - 0.5) * vec2(aspect, 1.0);
+  vec3 col = C_INK + C_ASH * 0.03 * exp(-dot(p, p) * 3.0);
+  // faint engraved grain: horizontal on A, vertical on B
+  col += C_GRAPHITE * 0.07 * mix(hatch(px.y / 8.0, 0.06), hatch(px.x / 8.0, 0.06), right);
+  col = overUI(col, uv);
+  // B is the negative of A (greys only: the orange stays orange)
+  float grey = 1.0 - smoothstep(0.12, 0.35, col.r - col.g);
+  col = mix(col, max(C_BONE + C_INK - col, vec3(0.0)), grey * inv * right);
+  // the seam: a bone hairline that turns into a hot orange cut on ⏎
+  float d = abs(px.x - ${W / 2}.0);
+  float ln = pxLine(d, 0.4, 1.4);
+  vec3 sc = mix(C_BONE * 0.3, C_SIGNAL * (1.0 + 2.0 * seam), sat(seam * 2.0));
+  col = mix(col, sc, ln * (0.4 + 0.6 * sat(seam * 2.0)));
+  fragColor = vec4(col, 1.0);
+}`,
+  // The crowd look: plain ink under the scrollback (the wall of context is drawn in the UI).
+  crowd: /* glsl */ `
+uniform float t, aspect, glow;
+${UI_OVER}
+void main() {
+  vec2 p = (vUv - 0.5) * vec2(aspect, 1.0);
+  vec3 col = C_INK + C_ASH * 0.025 * glow * exp(-dot(p, p) * 2.5);
   col = overUI(col, vUv);
   fragColor = vec4(col, 1.0);
 }`,

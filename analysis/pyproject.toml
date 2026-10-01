@@ -9,7 +9,8 @@ dependencies = [
     "fonttools>=4.66.0",
     "librosa>=1.0.0",
     "matplotlib>=3.11.2",
-    "mlx-whisper>=0.4.3",
+    "mlx-whisper>=0.4.3; sys_platform == 'darwin'",
+    "openai-whisper>=20250625; sys_platform != 'darwin'",
     "numpy>=2.5.3",
     "onnxruntime>=1.30.0",
     "scipy>=1.18.1",
@@ -17,3 +18,12 @@ dependencies = [
     "torch>=2.14.0",
     "torchaudio>=2.11.0",
 ]
+
+# CUDA torch on Windows (PyPI only has CPU wheels there); macOS keeps the PyPI (MPS) build.
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu130", marker = "sys_platform == 'win32'" }]

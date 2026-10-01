@@ -1,4 +1,11 @@
-// FIG. 5 `spacetime` — four movements of one idea (revision 2).
+// FIG. 5 `spacetime` — four movements of one idea (revision 2), split over two timeline entries around
+// `loss` (new song, verse 5): `{ part: 1 }` plays I–II (lines 44–45) and `{ part: 2 }` plays III–IV
+// (lines 48–49); each looks up only its own lines and times itself inside its own window.
+//  Part 1 opens on the downbeat where the drums return after `cage`: the scope powers on from a point.
+//  It ends falling through the horizon into black, leaving the singularity as the spark (SINGULARITY_PX)
+//  that `loss` picks up as its pen. Part 2 opens where `loss` dives, rolled upside down, into its sharp
+//  minimum: that pit is the throat of the well, the spark still burning at its bottom as the crane
+//  climbs out and unwinds the roll.
 //  I   "We had a stable training run,": the stable run as a pristine instrument. A triggered phosphor
 //      scope, the waveform almost still, the beam repainting it once per beat and writing the lyric on it.
 //      Locked-off camera, one slow, barely perceptible push; the glass graticule parallaxes over the phosphor.
@@ -23,7 +30,7 @@ import { strokeText, type StrokeText } from '../engine/stroke';
 import { sparkHead, sparkParticles } from './_motifs';
 import { PDoom, formatPDoom } from '../engine/hud';
 import { clamp, lerp, ease, prog, pulse, hash, noise1, smoothstep, springStep, TAU, type V2, polylineLengths, pointAtLength } from '../engine/util';
-import { LensPass, MipLayer } from './spacetime-lens';
+import { LensPass, MipLayer, SINGULARITY_PX } from './spacetime-lens';
 
 type P3 = { x: number; y: number; z: number };
 type Proj = { x: number; y: number; s: number; w: number };
@@ -125,13 +132,22 @@ export default class SpacetimeScene extends Scene {
   ringWords: Word[] = [];
   pd!: PDoom;
 
+  part: 1 | 2 = 1;
+
   override async init() {
-    const ly = this.ctx.lyrics, au = this.ctx.audio;
     this.T0 = this.ctx.start; this.T1 = this.ctx.end;
+    this.part = Number(this.ctx.params.part ?? 1) === 2 ? 2 : 1;
+    this.pd = new PDoom(this.ctx.lyrics);
+    if (this.part === 1) this.initPart1(); else this.initPart2();
+  }
+
+  /** Part 1 (its own entry): "We had a stable training run" / "But now the singularity's begun".
+   *  Opens on the downbeat where the drums return (the scope powers on) and ends falling through the
+   *  horizon into black, the singularity left as the spark that `loss` picks up. */
+  initPart1() {
+    const ly = this.ctx.lyrics, au = this.ctx.audio;
     this.l1 = ly.get('stable training run');
     this.l2 = ly.get('singularity');
-    this.l3 = ly.get('optimizing');
-    this.l4 = ly.get('atoms');
     this.wBut = this.l2.words[0]!;
     this.wNow = findWord(this.l2, 'now');
     this.wThe = findWord(this.l2, 'the');
@@ -140,32 +156,15 @@ export default class SpacetimeScene extends Scene {
     this.tBut = this.wBut.start;
     // the transformation lands on the beat of "now"
     this.tNow = Math.max(this.tBut + 0.12, au.nearestBeat(this.wNow.start));
-    this.tAnd = this.l3.words[0]!.start;
-    this.tM3 = au.timeOfBeat(Math.ceil(au.beatAt(this.tAnd) - 0.05));
-    this.tOpt = findWord(this.l3, 'optimizing,').start;
-    const wA = findWord(this.l3, 'accelerating,');
-    this.tAcc = wA.start; this.tAccEnd = wA.end;
-    this.tI = this.l4.words[0]!.start;
-    this.tAtoms = findWord(this.l4, 'atoms').start;
-    const wR = findWord(this.l4, 'rearranging');
-    this.tRe = wR.start; this.tReEnd = wR.end;
     const downIn = (lo: number, hi: number) => au.downbeats.find((d) => d > lo && d < hi);
     const beatAfter = (x: number) => au.timeOfBeat(Math.ceil(au.beatAt(x) - 1e-3));
     this.tPlunge = downIn(this.tNow + 0.2, this.wSing.start + 0.3) ?? beatAfter(this.wThe.end);
     this.tDb2 = downIn(this.tPlunge + 0.5, this.wBegun.start + 0.3) ?? beatAfter(this.wBegun.start - 0.3);
-    this.tFall0 = Math.max(this.wBegun.end - 0.2, this.tM3 - 0.36);
+    // the window ends on the next line's downbeat: the fall through the horizon takes the last beat
+    this.tM3 = this.T1;
+    const bLast = au.timeOfBeat(Math.round(au.beatAt(this.T1)) - 1);
+    this.tFall0 = clamp(bLast, this.wBegun.start + 0.45, this.T1 - 0.25);
     this.m2beats = au.beats.filter((b) => b > this.tNow + 0.05 && b < this.tM3 - 0.05);
-    /** Nearest downbeat (else beat) to `target` inside [lo, hi]. */
-    const pick = (target: number, lo: number, hi: number) => {
-      for (const list of [au.downbeats, au.beats]) {
-        let best = NaN;
-        for (const b of list) if (b >= lo && b <= hi && (isNaN(best) || Math.abs(b - target) < Math.abs(best - target))) best = b;
-        if (!isNaN(best)) return best;
-      }
-      return target;
-    };
-    this.tCutB = pick(this.tAcc, this.tOpt + 0.3, this.tAcc + 0.6);
-    this.tTop = pick(this.tAccEnd - 0.1, this.tAcc + 0.8, this.tI + 0.4);
 
     // ---- I: beam-written lyric (vector font), in graticule divisions
     {
@@ -198,9 +197,39 @@ export default class SpacetimeScene extends Scene {
       const wb = this.wBegun;
       this.begunLay = layout(wb.w.toUpperCase(), this.big, 100);
       const n = this.begunLay.glyphs.length;
-      const span = Math.min(wb.end - wb.start, 0.7);
+      // "begun" is held past the cut: it is set in full before the fall
+      const span = Math.min(wb.end - wb.start, 0.7, this.tFall0 - wb.start - 0.05);
       this.begunGlyphT = this.begunLay.glyphs.map((_, i) => [wb.start + (i / n) * span, wb.start + ((i + 1) / n) * span]);
     }
+  }
+
+  /** Part 2 (its own entry): "And you're optimizing, accelerating" / "I feel my atoms rearranging".
+   *  Opens on the downbeat where `loss` dives into its sharp minimum: the pit is the throat of the
+   *  spacetime well, and the camera corkscrews up out of it. */
+  initPart2() {
+    const ly = this.ctx.lyrics, au = this.ctx.audio;
+    this.l3 = ly.get('optimizing');
+    this.l4 = ly.get('atoms');
+    this.tM3 = this.T0;
+    this.tAnd = this.l3.words[0]!.start;
+    this.tOpt = findWord(this.l3, 'optimizing,').start;
+    const wA = this.l3.words[this.l3.words.length - 1]!; // "accelerating"
+    this.tAcc = wA.start; this.tAccEnd = wA.end;
+    this.tI = this.l4.words[0]!.start;
+    this.tAtoms = findWord(this.l4, 'atoms').start;
+    const wR = findWord(this.l4, 'rearranging');
+    this.tRe = wR.start; this.tReEnd = wR.end;
+    /** Nearest downbeat (else beat) to `target` inside [lo, hi]. */
+    const pick = (target: number, lo: number, hi: number) => {
+      for (const list of [au.downbeats, au.beats]) {
+        let best = NaN;
+        for (const b of list) if (b >= lo && b <= hi && (isNaN(best) || Math.abs(b - target) < Math.abs(best - target))) best = b;
+        if (!isNaN(best)) return best;
+      }
+      return target;
+    };
+    this.tCutB = pick(this.tAcc, this.tOpt + 0.3, this.tAcc + 0.6);
+    this.tTop = pick(this.tAccEnd - 0.1, this.tAcc + 0.8, this.tI + 0.4);
 
     // ---- III: flow clock — speed steps up on every beat after "And you're"
     const n = Math.ceil((this.T1 - this.T0 + 1) / this.flowDt);
@@ -257,7 +286,6 @@ export default class SpacetimeScene extends Scene {
       this.dots.push(d);
     });
     this.ringWords = this.l3.words;
-    this.pd = new PDoom(this.ctx.lyrics);
   }
 
   // ================================================================ I: the scope
@@ -273,6 +301,10 @@ export default class SpacetimeScene extends Scene {
     return { x: W / 2 + 0.8 * c.dx + x * s, y: H / 2 + 0.8 * c.dy - y * s };
   }
   lensCentre0(): V2 { return this.phos(this.tNow, 0, 0); }
+  /** Horizontal extent of the trace: the CRT powers on from a point on the entry's downbeat (the drums
+   *  come back in) and collapses back to a point on "But". */
+  powerOn(t: number) { return prog(t, this.T0 - 0.005, this.T0 + 0.16, ease.outExpo); }
+  hx(t: number) { return this.powerOn(t) * (1 - this.squeeze(t)); }
   /** 0 → 1: the CRT collapse on "But" (horizontal squeeze to a point). */
   squeeze(t: number) { return prog(t, this.tBut + 0.03, this.tNow, ease.inCubic); }
   /** Triggered waveform (divisions): nearly still, drifting 1/16 wavelength per beat. */
@@ -287,13 +319,13 @@ export default class SpacetimeScene extends Scene {
   beamX(f: Frame) { return -8.3 + 16.6 * f.beatPhase; }
 
   drawScope(t: number, f: Frame, L: LineBatch) {
-    if (t >= this.tNow + 0.02) return;
+    if (t >= this.tNow + 0.02 || this.powerOn(t) <= 0) return;
     const sg = LIN.signal, em = LIN.ember;
     const sq = this.squeeze(t);
-    const hx = 1 - sq;
+    const hx = this.hx(t);
     const bright = 1 + 3 * sq * sq;
     const on = prog(t, this.T0 - 0.01, this.T0 + 0.02);
-    const ign = 1 - prog(t, this.T0, this.T0 + 0.55, ease.outCubic); // the handoff flatline, still white-hot
+    const ign = 1 - prog(t, this.T0, this.T0 + 0.5, ease.outCubic); // power-on: the fresh trace is white-hot
     const beamX = this.beamX(f) * hx;
     const N = 560;
     let prev: V2 | null = null;
@@ -305,7 +337,8 @@ export default class SpacetimeScene extends Scene {
         let d = beamX - x * hx;
         if (d < 0) d += 16.6 * hx + 1e-3;
         const glow = lerp(Math.exp(-d / 2.6), 1, ign);
-        const I = (0.42 + 2.9 * glow) * on * bright;
+        // (while powering on, the squeezed trace's segments pile up: keep its ink per px constant)
+        const I = (0.42 + 2.9 * glow) * on * bright * Math.max(0.02, this.powerOn(t));
         // hot core + a wide soft halo (the phosphor's bloom)
         const wh = 0.45 * ign;
         L.seg2(prev.x, prev.y, p.x, p.y, 2.1 + 1.1 * glow - 0.6 * ign, [lerp(lerp(sg[0], em[0], glow * 0.4), 1.6, wh) * I * 1.35, lerp(lerp(sg[1], em[1], glow * 0.4), 1.1, wh) * I * 1.2, lerp(sg[2], 0.8, wh) * I * 1.05], 1);
@@ -388,7 +421,9 @@ export default class SpacetimeScene extends Scene {
     c.font = font(F.mono(500), 17);
     c.letterSpacing = '2px';
     c.textBaseline = 'alphabetic';
-    const bpm = this.ctx.audio.bpm;
+    // local tempo (the song accelerates): the period of the beat the scope is triggered on
+    const au = this.ctx.audio, bi = Math.floor(au.beatAt(t));
+    const bpm = 60 / Math.max(0.2, au.timeOfBeat(bi + 1) - au.timeOfBeat(bi));
     const hz = bpm / 60;
     const but = prog(t, this.tBut, this.tBut + 0.05);
     const blink = Math.floor(t * 8) % 2 === 0;
@@ -611,17 +646,27 @@ export default class SpacetimeScene extends Scene {
   beamLight(t: number, f: Frame): [number, number, number] {
     if (t >= this.tNow) return [0, 0, 0];
     const sq = this.squeeze(t);
-    const p = this.phos(t, this.beamX(f) * (1 - sq), this.traceY(this.beamX(f), t) * (1 - sq));
+    const p = this.phos(t, this.beamX(f) * this.hx(t), this.traceY(this.beamX(f), t) * (1 - sq));
     return [p.x, p.y, 0.8 * prog(t, this.T0 + 0.3, this.T0 + 0.8) * (1 + 2 * sq * sq)];
   }
 
   drawBeam(t: number, f: Frame, L: LineBatch) {
     if (t >= this.tNow + 0.05) return;
     const sq = this.squeeze(t);
-    const bx = this.beamX(f) * (1 - sq);
+    const bx = this.beamX(f) * this.hx(t);
     const p = this.phos(t, bx, this.traceY(this.beamX(f), t) * (1 - sq));
     const flare = 1 + 2.5 * sq * sq;
     sparkHead(L, p.x, p.y, t, 0.85 * (1 + 0.6 * sq), prog(t, this.T0, this.T0 + 0.05) * flare * (1 - prog(t, this.tNow, this.tNow + 0.05)));
+  }
+
+  /** The end of part 1: through the horizon everything is black but the singularity itself, a point
+   *  of light at the centre — the spark, which `loss` picks up as its pen (SINGULARITY_PX). */
+  drawCore(t: number, L: LineBatch) {
+    const k = prog(t, this.tFall0 + 0.12, this.T1 - 0.03, ease.inCubic);
+    if (k <= 0) return;
+    const P = SINGULARITY_PX, t0 = this.tFall0 + 0.2;
+    sparkParticles(L, t, (tb) => (tb < t0 ? null : P), { rate: 110, speed: 230, seed: 17 });
+    sparkHead(L, P.x, P.y, t, 0.6 + 0.5 * k, 1.6 * k);
   }
 
   renderLens(f: Frame, out: THREE.WebGLRenderTarget): PostOverrides {
@@ -651,6 +696,7 @@ export default class SpacetimeScene extends Scene {
     this.drawScope(t, f, L2);
     this.drawInfall(t, L2, ln);
     this.drawBeam(t, f, L2);
+    this.drawCore(t, L2);
     L2.render(renderer, out);
 
     const T = this.text; T.clear();
@@ -658,7 +704,7 @@ export default class SpacetimeScene extends Scene {
     this.ctx.comp.draw(renderer, T.upload(), out);
 
     const born = pulse(t, this.tNow, 0.09), pl = pulse(t, this.tPlunge, 0.1), db2 = pulse(t, this.tDb2, 0.1);
-    const sh = m1 ? 0 : 16 * born + 12 * pl + 7 * db2 + 3.5 * f.a.kick;
+    const sh = (m1 ? 5 * pulse(t, this.T0, 0.08) : 16 * born + 12 * pl + 7 * db2 + 3.5 * f.a.kick) * (1 - prog(t, this.tFall0 + 0.1, this.T1));
     return {
       bloom: m1 ? 0.8 : 0.7, bloomThreshold: m1 ? 0.8 : 1.0, halation: m1 ? 0.3 : 0.18,
       shake: [sh * noise1(t * 43, 1), sh * noise1(t * 47, 2)],
@@ -708,11 +754,13 @@ export default class SpacetimeScene extends Scene {
     const spin = this.flow(t) * 0.35;
     let c: Cam;
     if (t < this.tCutB) {
-      // out of the throat: a corkscrew crane up from the singularity to a high three-quarter view
+      // out of the throat: a corkscrew crane up from the singularity to a high three-quarter view. It
+      // starts where `loss` ends, looking straight down its sharp minimum with the world rolled upside
+      // down (roll π + 0.13, a wide lens), and unwinds that roll as it climbs.
       const l = t - this.tM3;
       const e = ease.outExpo(clamp(l / 1.0));
       const tgt = { x: 0, y: lerp(-4.2, -2.2, e), z: 0 };
-      c = { pos: orbit(tgt, -1.6 + 1.1 * e + spin * 0.6, lerp(1.45, 0.72, e), lerp(7.5, 18.5, e) - 0.6 * Math.max(0, l - 1.0)), tgt, roll: lerp(-0.9, -0.06, e), fov: lerp(50, 34, e) };
+      c = { pos: orbit(tgt, -1.6 + 1.1 * e + spin * 0.6, lerp(1.45, 0.72, e), lerp(7.5, 18.5, e) - 0.6 * Math.max(0, l - 1.0)), tgt, roll: lerp(0.13 - Math.PI, -0.06, e), fov: lerp(58, 34, e) };
     } else if (t < this.tTop) {
       const l = t - this.tCutB;
       const tgt = { x: 0, y: -3, z: 0 };
@@ -750,6 +798,7 @@ export default class SpacetimeScene extends Scene {
     const L2 = this.L2; L2.clear();
     this.drawAtoms(t, L2);
     this.drawClipSpark(t, L2);
+    this.drawThroatSpark(t, L2, K, e);
     L2.render(renderer, out);
     const emerge = pulse(t, this.tM3, 0.14);
     const shakeA = 7 * emerge + 6 * pulse(t, this.tCutB, 0.1) + 4 * f.a.kick;
@@ -936,6 +985,21 @@ export default class SpacetimeScene extends Scene {
     }
   }
 
+  /** The hand-off from `loss`: its spark, drained into the minimum, still burns at the bottom of the
+   *  throat as the camera climbs out, then sinks into the well (it re-emerges for the paperclip). */
+  drawThroatSpark(t: number, L: LineBatch, K: number, e: number) {
+    const k = 1 - prog(t, this.T0 + 0.15, this.T0 + 0.8, ease.inCubic);
+    if (k <= 0) return;
+    const q = this.proj(this.sheet(0, 0, this.well(0, K, e) + 0.05));
+    if (!q) return;
+    sparkParticles(L, t, (tb) => {
+      if (tb < this.T0 - 0.02 || tb > this.T0 + 0.6) return null;
+      const p = this.proj(this.sheet(0, 0, this.well(0, this.K(tb), e) + 0.05));
+      return p ? { x: p.x, y: p.y } : null;
+    }, { rate: 90, speed: 200, seed: 23 });
+    sparkHead(L, q.x, q.y, t, 0.9 * k + 0.2, 1.4 * k);
+  }
+
   /** The end: the spark re-emerges from the well and draws the paperclip's wire. */
   drawClipSpark(t: number, L: LineBatch) {
     if (t <= this.tClip0 - 0.25) return;
@@ -963,7 +1027,7 @@ export default class SpacetimeScene extends Scene {
 
   // ================================================================ render
   override render(f: Frame, out: THREE.WebGLRenderTarget): PostOverrides {
-    return f.t < this.tM3 ? this.renderLens(f, out) : this.renderSheet(f, out);
+    return this.part === 1 ? this.renderLens(f, out) : this.renderSheet(f, out);
   }
 }
 

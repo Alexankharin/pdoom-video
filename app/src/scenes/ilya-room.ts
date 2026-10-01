@@ -57,10 +57,16 @@ export class IlyaTimes {
   what: Word; see: Word; well: Word; never: Word; know: Word;
   was: Word; it: Word; all: Word; forW: Word; show: Word;
   slam: number; slit: number; dark: number; ledOff: number; knowBar: number; meet: number;
-  constructor(ly: Lyrics, au: AudioData, start: number, end: number) {
-    this.start = start; this.end = end;
-    this.l1 = ly.get('What did Ilya');
-    this.l2 = ly.get('all for show');
+  /** the curtains start closing (on "for", or earlier when the line is rushed, as in take 2) */
+  close: number;
+  /** the seam's light starts collapsing to the spark */
+  collapse: number;
+  /** 1 or 2: the pass (take 2 re-samples the camera: the mirrored orbit, a higher house angle) */
+  take: number;
+  constructor(ly: Lyrics, au: AudioData, start: number, end: number, nth = 0, take = 1) {
+    this.start = start; this.end = end; this.take = take;
+    this.l1 = ly.get('What did Ilya', nth);
+    this.l2 = ly.get('all for show', nth);
     const w1 = this.l1.words, w2 = this.l2.words;
     const find = (ws: Word[], re: RegExp, i: number) => ws.find((w) => re.test(w.w)) ?? ws[i]!;
     this.what = w1[0]!; this.see = find(w1, /see/i, 3); this.well = find(w1, /we[’']?ll/i, 4);
@@ -79,6 +85,8 @@ export class IlyaTimes {
     this.knowBar = au.downbeats.find((d) => d > this.dark + 0.4 && d < this.ledOff) ?? (this.dark + this.ledOff) / 2;
     // the curtains meet on the beat before "show?"
     this.meet = au.timeOfBeat(Math.floor(au.beatAt(this.show.start - 0.05)));
+    this.close = Math.min(this.forW.start, this.meet - 0.3);
+    this.collapse = Math.min(this.show.start + 0.01, end - 0.3);
   }
 }
 
@@ -102,8 +110,8 @@ export class IlyaRoom {
   stickerTex: THREE.CanvasTexture;
   private lastBar = -1;
 
-  constructor(ly: Lyrics, private au: AudioData, start: number, end: number) {
-    this.T = new IlyaTimes(ly, au, start, end);
+  constructor(ly: Lyrics, private au: AudioData, start: number, end: number, nth = 0, take = 1) {
+    this.T = new IlyaTimes(ly, au, start, end, nth, take);
     this.screenCv.width = 1024 * SCALE; this.screenCv.height = 576 * SCALE; scaleContext2D(this.screenCv.getContext('2d')!, SCALE);
     this.screenTex = new THREE.CanvasTexture(this.screenCv);
     this.screenTex.colorSpace = THREE.SRGBColorSpace;
@@ -236,7 +244,8 @@ export class IlyaRoom {
       const k = clamp(bar);
       const sc = k < 1 ? lerp(1.5, 1, ease.inQuad(k)) : 1;
       c.save();
-      c.translate(w / 2, h * 0.5); c.rotate(-0.045); c.scale(sc, sc);
+      const t2 = this.T.take === 2;
+      c.translate(w / 2, h * 0.5); c.rotate(t2 ? 0.05 : -0.045); c.scale(sc, sc);
       c.globalAlpha = clamp(k * 3);
       c.fillStyle = '#030303';
       // narrower than the screen, so its glow frames the bar on every side (it reads as a bar on a screen)
@@ -246,7 +255,14 @@ export class IlyaRoom {
       c.textBaseline = 'middle';
       c.textAlign = 'center';
       c.letterSpacing = '14px';
-      c.fillText('REDACTED', 7, 2);
+      c.fillText('REDACTED', 7, t2 ? -14 : 2);
+      if (t2) {
+        // the second draw: same screen, same bar
+        c.font = font(F.mono(500), 22);
+        c.letterSpacing = '5px';
+        c.fillStyle = rgba('bone', 0.75);
+        c.fillText('SAMPLE 2 OF 2 · STILL REDACTED', 3, 44);
+      }
       c.restore();
     }
     this.screenTex.needsUpdate = true;
@@ -260,11 +276,14 @@ export class IlyaRoom {
     // then squares up to dead front and sinks to the laptop's lip as the lid comes down
     // (it lingers behind the lid through "What did" — the stickers — and whips round on "Ilya see?")
     const ilya = this.T.l1.words[2]!;
-    const phi = keys(t, [[T.start - 1, Math.PI], [T.what.start, Math.PI + 0.05, ease.inOutQuad], [ilya.start, Math.PI + 0.3, ease.inOutQuad],
+    const t2 = T.take === 2;
+    const phi0 = keys(t, [[T.start - 1, Math.PI], [T.what.start, Math.PI + 0.05, ease.inOutQuad], [ilya.start, Math.PI + 0.3, ease.inOutQuad],
       [T.slam - 0.02, TAU - 0.5, ease.inOutCubic], [T.slam + 0.35, TAU - 0.46, ease.outCubic], [T.slit, TAU, ease.inOutCubic]]);
+    // take 2: the same orbit, mirrored (round the right-hand side of the lid)
+    const phi = t2 ? TAU - phi0 : phi0;
     const r = keys(t, [[T.start - 1, 0.92], [T.what.start, 0.86, ease.linear], [T.slam, 0.62, ease.inOutCubic],
       [T.well.start, 0.6, ease.linear], [T.slit, 0.56, ease.inOutCubic], [T.dark + 0.1, 0.3, ease.inOutCubic], [T.ledOff, 0.27, ease.linear]]);
-    const hgt = keys(t, [[T.start - 1, 0.24], [T.what.start, 0.22, ease.linear], [T.slam, 0.13, ease.inOutCubic],
+    const hgt = keys(t, [[T.start - 1, t2 ? 0.36 : 0.24], [T.what.start, t2 ? 0.32 : 0.22, ease.linear], [T.slam, t2 ? 0.17 : 0.13, ease.inOutCubic],
       [T.well.start, 0.12, ease.linear], [T.slit, 0.045, ease.inOutCubic], [T.dark + 0.1, 0.02, ease.inOutCubic]]);
     const led: V3 = ILYA.led;
     const gap: V3 = [0, 0.7728, 0.1085];
@@ -277,7 +296,7 @@ export class IlyaRoom {
     // by the time the slit collapses to the sleep light (the point the theatre and the outro inherit)
     const side = prog(t, T.start, T.what.start + 0.3, ease.inOutCubic) * (1 - prog(t, T.slit - 0.4, T.slit + 0.1, ease.inOutCubic));
     const c0 = lookAt(pos, tgt, fov, roll);
-    const roomCam = side > 0 ? lookAt(pos, add(tgt, mul(c0.R, -0.14 * r * side)), fov, roll) : c0;
+    const roomCam = side > 0 ? lookAt(pos, add(tgt, mul(c0.R, (t2 ? 0.14 : -0.14) * r * side)), fov, roll) : c0;
     // the lid: pushed down word by word, to a slit on the downbeat, then shut
     const lidA = keys(t, [[T.well.start - 0.02, LID_OPEN], [T.never.start, 1.42, ease.outCubic], [T.know.start, 0.8, ease.outCubic],
       [T.slit, 0.07, ease.inOutCubic], [T.dark, 0.035, ease.linear], [T.dark + 0.25, 0.0, ease.inCubic]]);
@@ -299,12 +318,13 @@ export class IlyaRoom {
     }
     // ---------------------------------------------------------- the theatre
     const k = prog(t, T.was.start, T.end, ease.inOutQuad);
-    const cpos: V3 = [0, lerp(1.45, 1.4, k), lerp(14.2, 12.4, k)];
-    const ctgt: V3 = [0, 2.9, ILYA.seamZ];
-    const cam = lookAt(cpos, ctgt, 40);
+    // take 1: from the stalls, pushing in; take 2: from the back of the circle, high, sinking
+    const cpos: V3 = t2 ? [0, lerp(4.6, 3.9, k), lerp(16.4, 15.2, k)] : [0, lerp(1.45, 1.4, k), lerp(14.2, 12.4, k)];
+    const ctgt: V3 = [0, t2 ? 2.6 : 2.9, ILYA.seamZ];
+    const cam = lookAt(cpos, ctgt, t2 ? 36 : 40);
     const on = t >= T.was.start ? keys(t, [[T.was.start, 0], [T.was.start + 0.025, 1.25, ease.linear], [T.was.start + 0.05, 0.55, ease.linear],
       [T.was.start + 0.1, 1.0, ease.outCubic]]) : 0;
-    const curtainK = prog(t, T.forW.start, T.meet, ease.inOutCubic);
+    const curtainK = prog(t, T.close, T.meet, ease.inOutCubic);
     // the pool is the only light: as the curtains close in front of it the house goes dark
     const shut = Math.pow(1 - curtainK, 1.4);
     return {

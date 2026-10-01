@@ -1,11 +1,14 @@
 // FIG. 2 `loss` — "Training loss, suddenly".
-// A hairline log-scale chart draws in from black; the spark draws a noisy loss plateau while
+// It comes out of `spacetime` part 1's fall through the horizon: the frame is black but for the
+// singularity, a point of light, which is the spark. It shoots to the top of the loss axis as a
+// hairline log-scale chart draws in around it; the spark draws a noisy loss plateau while
 // the lyric rides the curve. On "drop" the curve falls off a grokking cliff, the camera falls
 // with it out of the bottom of the chart into a 3D loss landscape engraved as illuminated
 // contour lines (the log-loss levels continue the chart's axis), the spark descending a canyon
 // (the only orange thing) toward a sharp minimum. "now I'm your servant and you're my boss":
-// typographic hierarchy inversion; the world rolls 180° on "boss" and dives into the minimum
-// (hard cut into the pre-chorus).
+// typographic hierarchy inversion; the world rolls 180° into "boss" and dives into the sharp minimum,
+// the spark draining into it; hard cut on the downbeat to `spacetime` part 2, whose camera climbs out
+// of the same pit (the throat of the spacetime well), still rolled upside down.
 import * as THREE from 'three';
 import { Scene, type Frame, type PostOverrides } from '../engine/scene';
 import { W, H, clearRT, Layer2D } from '../engine/gl';
@@ -15,6 +18,7 @@ import { F, font, layout, plain, type TextLayout } from '../engine/type';
 import { Lyrics, norm, type Line, type Word } from '../engine/lyrics';
 import { GLSL_COMMON } from '../engine/glsl/common';
 import { sparkHead, sparkParticles } from './_motifs';
+import { SINGULARITY_PX } from './spacetime-lens';
 import { PDoom, formatPDoom } from '../engine/hud';
 import { clamp, lerp, ease, prog, pulse, noise1, smoothstep, TAU } from '../engine/util';
 
@@ -168,6 +172,7 @@ const YR = -8.2; // terrain base level (world y)
 const TXT = 0.8; // chart lyric size (world units)
 const TXT3 = 0.62; // canyon lyric size (world units)
 const SPACE_EM = 0.14; // extra word spacing (em)
+const LAND = 0.16; // s: the spark's flight from the singularity (screen centre) to the chart's first point
 
 type P3 = { x: number; y: number; z: number };
 type Proj = { x: number; y: number; s: number; w: number };
@@ -405,7 +410,7 @@ export default class LossScene extends Scene {
   }
   /** Time a chart glyph gets written (never before the spark could reach it). */
   glyphTime(tg: number, gx: number) {
-    return Math.max(tg, this.T0 + 0.03 + 0.1 * (gx / Math.max(0.1, this.xC)));
+    return Math.max(tg, this.T0 + LAND + 0.03 + 0.1 * (gx / Math.max(0.1, this.xC)));
   }
 
   /** Chart x reached by the spark at time t (before the drop). */
@@ -428,8 +433,8 @@ export default class LossScene extends Scene {
     for (let k = -2; k <= 2; k++) x += head(t + k * 0.03);
     x /= 5;
     // the spark sprints in from the axis at the start
-    const catchUp = lerp(0, this.xC, prog(t, this.T0 + 0.02, this.T0 + 0.9, ease.outCubic));
-    x = Math.min(Math.max(x, this.xText0 * prog(t, this.T0, this.T0 + 0.2)), catchUp);
+    const catchUp = lerp(0, this.xC, prog(t, this.T0 + LAND, this.T0 + LAND + 0.8, ease.outCubic));
+    x = Math.min(Math.max(x, this.xText0 * prog(t, this.T0 + LAND, this.T0 + LAND + 0.2)), catchUp);
     const tail = prog(t, this.words1[this.words1.length - 1]!.end - 0.08, this.tDrop, ease.inOutQuad);
     return lerp(x, this.xC, tail);
   }
@@ -649,16 +654,30 @@ export default class LossScene extends Scene {
     const L2 = this.lines2; L2.clear();
     const sp = this.sparkPos(t);
     const hp = this.proj(sp.x, sp.y, sp.z);
-    const ignite = lerp(0.5, 1, prog(t, this.T0, this.T0 + 0.08)); // the opening hands over a lit spark
-    if (hp && ignite > 0) {
-      const sc = clamp(hp.s / 90, 0.6, 1.5);
+    // the spark arrives lit from the singularity `spacetime` part 1 fell into (the screen point it
+    // left there), and flies to the chart's first point
+    const fly = (tt: number) => prog(tt, this.T0, this.T0 + LAND, ease.inOutCubic);
+    const S0 = SINGULARITY_PX;
+    if (hp) {
+      const k = fly(t);
+      const hx = lerp(S0.x, hp.x, k), hy = lerp(S0.y, hp.y, k);
+      const sc = lerp(1.1, clamp(hp.s / 90, 0.6, 1.5), k);
       sparkParticles(L2, t, (tb) => {
-        if (tb < this.T0 + 0.05) return null;
+        if (tb < this.T0 - 0.02) return null;
         const p = this.sparkPos(tb);
         const q = this.proj(p.x, p.y, p.z);
-        return q ? { x: q.x, y: q.y } : null;
-      }, { rate: t > this.tDrop && t < this.tIn + 0.2 ? 170 : 85, intensity: 0.9, speed: 240 * sc, seed: 11 });
-      sparkHead(L2, hp.x, hp.y, t, sc * (1 + 1.2 * pulse(t, this.T0, 0.12) + 0.6 * pulse(t, this.tIn, 0.12)), ignite * (1 + 0.3 * f.a.kick));
+        const kb = fly(tb);
+        return q ? { x: lerp(S0.x, q.x, kb), y: lerp(S0.y, q.y, kb) } : null;
+      }, { rate: (t > this.tDrop && t < this.tIn + 0.2) || t < this.T0 + LAND ? 170 : 85, intensity: 0.9, speed: 240 * sc, seed: 11 });
+      if (k > 0 && k < 1) {
+        // the flight leaves a short streak
+        for (let i = 1; i <= 12; i++) {
+          const k0 = fly(t - i * 0.012), k1 = fly(t - (i - 1) * 0.012);
+          const I = 1.4 * (1 - i / 13);
+          L2.seg2(lerp(S0.x, hp.x, k0), lerp(S0.y, hp.y, k0), lerp(S0.x, hp.x, k1), lerp(S0.y, hp.y, k1), 2.2, [LIN.ember[0] * I, LIN.ember[1] * I, LIN.ember[2] * I], 1);
+        }
+      }
+      sparkHead(L2, hx, hy, t, sc * (1 + 0.8 * pulse(t, this.T0 + LAND, 0.1) + 0.6 * pulse(t, this.tIn, 0.12)), 1 + 0.3 * f.a.kick);
     }
     L2.render(renderer, out);
 
@@ -721,7 +740,7 @@ export default class LossScene extends Scene {
     const tA = Math.min(t, this.tDrop);
     const xA = this.sparkX(tA);
     const fadeChart = 1 - prog(t, this.tIn + 0.1, this.tIn + 0.6);
-    if (fadeChart > 0) {
+    if (fadeChart > 0 && t > this.T0 + LAND) {
       const n1 = 280;
       for (let i = 0; i <= n1; i++) {
         const x = (xA * i) / n1;
@@ -1023,13 +1042,15 @@ export default class LossScene extends Scene {
     typed(wAnd, 170, 205, 36);
     {
       const txt = wBoss.w.toUpperCase();
-      const k = prog(t, wBoss.start, wBoss.end, ease.outCubic);
+      // "boss" is held past the cut into `spacetime` part 2: it is set in full just before the cut
+      const bossEnd = Math.min(wBoss.end, this.T1 - 0.06);
+      const k = prog(t, wBoss.start, bossEnd, ease.outCubic);
       const fam = F.archivo(lerp(62, 125, k), 900);
       const size = lerp(120, 270, k);
       const lay = layout(txt, fam, size, -4);
       const x0 = 170, y0 = 225 + size * 0.76;
       c.font = font(fam, size);
-      const pr = Lyrics.wordProgress(wBoss, t) * txt.length;
+      const pr = prog(t, wBoss.start, bossEnd) * txt.length;
       lay.glyphs.forEach((g, i) => {
         if (pr - i <= 0) return;
         c.strokeStyle = rgba('ink', 0.85); c.lineWidth = 12;

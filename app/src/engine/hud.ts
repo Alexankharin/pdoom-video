@@ -14,7 +14,7 @@ export class PDoom {
   steps: { t: number; v: number }[] = [];
   constructor(lyrics: Lyrics) {
     const hits = lyrics.findWords('P(doom)').map((w) => w.start + 0.06);
-    const vals = [0.15, 0.42, 0.81, 0.99];
+    const vals = [0.15, 0.27, 0.42, 0.58, 0.74, 0.91, 0.99]; // one per chorus
     this.steps = [{ t: -1, v: 0.02 }, ...hits.map((t, i) => ({ t, v: vals[i] ?? 0.99 }))];
   }
   /** Value at t with the roll animation of each step (~0.9 s) and slow drift between steps. */

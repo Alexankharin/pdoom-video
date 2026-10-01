@@ -1,8 +1,10 @@
-// "Without a single CDR": the review schedule, drawn in world units on the same drawing sheet as
+// "Without a single `cdr`": the review schedule, drawn in world units on the same drawing sheet as
 // the roadmap (north of it). Time runs along x at the song's own rate, so the lyric is literally
 // scheduled: each word is a Gantt bar spanning exactly the time it is sung, filled as it is sung,
-// cascading down to the milestone lane where the reviews are stamped on the beats. The CDR slot
-// is an empty dashed diamond; its syllables light one by one; it ends as the prompt's caret.
+// cascading down to the milestone lane where the reviews are stamped on the beats. The CDR
+// (Critical Design Review) slot is an empty dashed diamond; when the lyric sings `cdr` (Lisp's,
+// "could-er", typeset as code) it unfolds into a cons cell whose car is the review and whose cdr
+// is nil: the slash of the empty box. That slash stands up and becomes the next prompt's caret.
 import { Lyrics, type Word } from '../engine/lyrics';
 import { rgba } from '../engine/palette';
 import { F, font } from '../engine/type';
@@ -13,6 +15,7 @@ export const GANTT = {
   V: 480, // world units per second
   GL: 700, // y of the milestone lane
   DS: 36, // milestone diamond half-diagonal
+  CELL: 72, // cons cell: side of each of its two boxes
   ROW: [-375, -258, -141], // bar y (relative to the lane) of the three lyric rows
   RULER: -500,
   WORD: 112, // lyric type size
@@ -22,7 +25,7 @@ export interface ScheduleTimes {
   t0: number; // time at x = GX
   words: Word[]; // Without, a, single
   cdr: Word;
-  syl: number[]; // C, D, R
+  syl: number[]; // `cdr` = "could-er": the two syllable starts
   SRR: number; PDR: number; TRR: number; LAUNCH: number;
   zip0: number; // the playhead leaves the CDR slot
   beats: number[]; // beat times across the strip
@@ -46,16 +49,18 @@ export class Schedule {
   }
   X(t: number) { return GANTT.GX + (t - this.T.t0) * GANTT.V; }
   get slot() { return { x: this.X(this.T.cdr.start), y: GANTT.GL }; }
+  /** Centre of the cons cell's cdr box (the nil slash; the future caret). */
+  get nil() { return { x: this.slot.x + GANTT.CELL / 2, y: GANTT.GL }; }
 
   /** Playhead x: song time, held at the empty slot, then a zip to LAUNCH. */
   playX(t: number) {
-    const T = this.T, sx = this.slot.x - GANTT.DS - 12;
+    const T = this.T, sx = this.slot.x - GANTT.CELL - 14;
     if (t < T.zip0) return Math.min(this.X(t), sx);
     return lerp(sx, this.X(T.LAUNCH) - 30, ease.inOutCubic(prog(t, T.zip0, T.LAUNCH)));
   }
   /** Time at which the playhead passes TRR on its zip (for the "skipped" mark). */
   get tSkip() {
-    const T = this.T, sx = this.slot.x - GANTT.DS - 12, xt = this.X(T.TRR), xl = this.X(T.LAUNCH) - 30;
+    const T = this.T, sx = this.slot.x - GANTT.CELL - 14, xt = this.X(T.TRR), xl = this.X(T.LAUNCH) - 30;
     const k = clamp((xt - sx) / (xl - sx));
     // invert inOutCubic numerically
     let lo = 0, hi = 1;
@@ -272,68 +277,116 @@ export class Schedule {
     return 0;
   }
 
-  /** The empty CDR slot: dashed, blinking, its syllables lit as sung; finally the caret. */
+  /**
+   * The CDR slot: a planned dashed diamond; on `cdr` it unfolds into a cons cell (car: the review,
+   * cdr: empty, blinking), the nil slash slams into the empty box on the second syllable; finally
+   * everything drains but the slash, which stands upright into the prompt's caret.
+   */
   private drawSlot(c: CanvasRenderingContext2D, t: number, px: number, o: { alpha: number; keep: number; morph: number; caret: { hw: number; hh: number } }) {
     const T = this.T, G = GANTT;
     const { x, y } = this.slot;
-    const r = G.DS;
+    const r = G.DS, S = G.CELL;
     const since = t - T.cdr.start;
-    const beat = T.beats.length > 1 ? (T.beats[T.beats.length - 1]! - T.beats[0]!) / (T.beats.length - 1) : 0.4545;
-    const blinkOn = since < 0 || Math.floor(since / (beat / 2)) % 2 === 0;
-    const m = o.morph;
-    const keep = o.keep;
-    // slot outline (dashed), morphing into the caret
-    const hw = lerp(r, o.caret.hw, m), hh = lerp(r, o.caret.hh, m), cw = o.caret.hw * m;
-    c.beginPath();
-    c.moveTo(x - cw, y - hh); c.lineTo(x + cw, y - hh); c.lineTo(x + hw, y); c.lineTo(x + cw, y + hh); c.lineTo(x - cw, y + hh); c.lineTo(x - hw, y); c.closePath();
-    if (m > 0) { c.fillStyle = rgba('signal', 0.9 * ease.inQuad(m)); c.fill(); }
-    const hot = since >= 0;
-    c.setLineDash(m > 0.5 ? [] : [12, lerp(9, 0, m * 2)]);
+    const s1 = T.syl[1] ?? T.cdr.start + 0.4;
+    // blink on the beat grid (half-beats), no fixed period
+    const bi = T.beats.findIndex((b) => b > t);
+    const b0 = bi > 0 ? T.beats[bi - 1]! : T.beats[0]!, b1 = bi > 0 ? T.beats[bi]! : b0 + 0.45;
+    const blinkOn = ((t - b0) / Math.max(0.05, b1 - b0)) % 1 < 0.5;
+    const m = o.morph, keep = o.keep;
+    const cons = ease.outExpo(prog(since, 0, 0.18));
+    const nilK = prog(t, s1, s1 + 0.09, ease.outCubic);
     c.lineJoin = 'miter';
-    c.strokeStyle = hot ? rgba('signal', (blinkOn ? 1 : 0.3) * (1 - m)) : rgba('ash', 0.9);
-    c.lineWidth = 3 * px;
-    c.stroke();
-    c.setLineDash([]);
-    // labels fade with the rest
+    // 1. the planned slot (before `cdr`): a dashed diamond like the milestones', folding away
+    if (cons < 1) {
+      const rr = r * (1 - 0.6 * cons);
+      c.globalAlpha = o.alpha * keep * (1 - cons);
+      c.beginPath(); c.moveTo(x, y - rr); c.lineTo(x + rr, y); c.lineTo(x, y + rr); c.lineTo(x - rr, y); c.closePath();
+      c.setLineDash([12, 9]);
+      c.strokeStyle = rgba('ash', 0.9); c.lineWidth = 3 * px; c.stroke();
+      c.setLineDash([]);
+    }
+    // 2. the cons cell: [ CDR | / ]
+    if (cons > 0) {
+      const sx = lerp(0.2, 1, cons), sy = lerp(0.5, 1, cons);
+      const hx = S * sx, hy = (S / 2) * sy;
+      c.globalAlpha = o.alpha * keep;
+      c.fillStyle = rgba('ink', 1);
+      c.fillRect(x - hx, y - hy, hx * 2, hy * 2);
+      c.strokeStyle = rgba('bone', 0.95); c.lineWidth = 3 * px;
+      c.strokeRect(x - hx, y - hy, hx, hy * 2);
+      // the cdr box: empty and blinking until nil lands in it
+      const hot = nilK <= 0 && since >= 0;
+      c.strokeStyle = hot ? rgba('signal', blinkOn ? 1 : 0.3) : rgba('bone', 0.95);
+      if (hot) c.setLineDash([10, 7]);
+      c.strokeRect(x, y - hy, hx, hy * 2);
+      c.setLineDash([]);
+      // car: the review it was meant to hold
+      c.textAlign = 'center';
+      c.font = font(F.mono(600), 24 * sx); c.fillStyle = rgba('bone', 0.95);
+      c.fillText('CDR', x - hx / 2, y + 8.5 * sx);
+      // box labels
+      c.font = font(F.mono(400), 16); c.fillStyle = rgba('graphite', cons);
+      c.fillText('car', x - S / 2, y + S / 2 + 24);
+      c.fillText('cdr', x + S / 2, y + S / 2 + 24);
+    }
+    // 3. nil: the slash across the empty box; it becomes the caret (drawn even when all else has drained)
+    if (nilK > 0 || m > 0) {
+      const n = this.nil;
+      const ang = lerp(-Math.PI / 4, -Math.PI / 2, ease.inOutCubic(m));
+      const hl = lerp((S / 2) * Math.SQRT2 * 0.86 * lerp(1.35, 1, nilK), o.caret.hh, m);
+      const hw = lerp(2.4 * px * (1 + 0.8 * (1 - nilK)), o.caret.hw, m);
+      c.globalAlpha = o.alpha;
+      c.save();
+      c.translate(n.x, n.y); c.rotate(ang);
+      c.fillStyle = rgba('signal', lerp(1, 0.9, m));
+      const len = hl * 2 * Math.max(nilK, m > 0 ? 1 : 0);
+      c.fillRect(-hl, -hw, len, hw * 2);
+      c.restore();
+    }
     c.globalAlpha = o.alpha * keep;
-    if (keep <= 0.002) return;
+    if (keep <= 0.002) { c.textAlign = 'left'; return; }
     c.textAlign = 'center';
     c.font = font(F.mono(500), 20); c.fillStyle = rgba('graphite', 1);
-    c.fillText('T−45 d', x, y + r + 32);
-    // before it is sung: a planned milestone label like the others; then the lyric, large, beside it
+    c.fillText('T−45 d', x, y + r + 58);
+    // before it is sung: a planned milestone label like the others; then the lyric, as code, beside it
     const big = ease.outExpo(prog(since, 0, 0.14));
     if (big < 1) {
       c.font = font(F.mono(600), 44); c.fillStyle = rgba('bone', 0.95 * (1 - big));
       c.fillText('CDR', x, y - r - 22);
     }
     if (since >= 0) {
-      const size = 150;
+      const size = 140;
       c.font = font(F.mono(700), size);
-      const wch = c.measureText('C').width;
-      const lx = x + r + 44, base = y + size * 0.36;
+      const adv = c.measureText('c').width;
+      const lx = x + S + 44, base = y + size * 0.36;
+      // `cd on "could", r` on "er"
+      const chars = ['`', 'c', 'd', 'r', '`'];
+      const at = [T.syl[0]!, T.syl[0]!, T.syl[0]!, s1, s1];
       c.textAlign = 'center';
-      ['C', 'D', 'R'].forEach((ch, k) => {
-        const ts = T.syl[k]!;
+      chars.forEach((ch, k) => {
+        const ts = at[k]!;
         const lit = t >= ts;
         const pop = (lit ? 1 + 0.3 * Math.pow(0.5, (t - ts) / 0.05) : 1) * lerp(0.3, 1, big);
         c.save();
-        c.translate(lx + wch * (k + 0.5), base - size * 0.36); c.scale(pop, pop);
+        c.translate(lx + adv * (k + 0.5), base - size * 0.36); c.scale(pop, pop);
         c.fillStyle = lit ? rgba('signal', 1) : rgba('bone', 0.3);
         c.fillText(ch, 0, size * 0.36);
         c.restore();
       });
       c.textAlign = 'left';
-      c.font = font(F.mono(700), 64); c.fillStyle = rgba('signal', big);
-      c.fillText('*', lx + wch * 3 + 4, base - size * 0.5);
-      // status and footnote
-      const sa = prog(t, T.syl[1]! - 0.02, T.syl[1]! + 0.05);
+      // status and the footnotes (the review, then the REPL's opinion)
+      const sa = prog(t, s1 - 0.02, s1 + 0.05);
       c.font = font(F.mono(600), 26); c.fillStyle = rgba('signal', sa);
       c.fillText('STATUS: NOT HELD', lx + 6, base + 52);
       const fa = prog(t, T.syl[0]! + 0.3, T.syl[0]! + 0.45);
       c.font = font(F.mono(400), 22); c.fillStyle = rgba('ash', fa);
       c.fillText('* CDR: Critical Design Review', lx + 6, base + 92);
+      const ra = prog(t, s1 + 0.25, s1 + 0.4);
+      c.fillStyle = rgba('ash', ra);
+      c.fillText("> (cdr '(CDR))", lx + 6, base + 126);
+      c.fillStyle = rgba('bone', ra);
+      c.fillText('NIL', lx + 6, base + 158);
     }
     c.textAlign = 'left';
   }
 }
-
