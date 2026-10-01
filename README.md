@@ -2,7 +2,7 @@
 
 A generative, code-rendered music video with word-synced karaoke typography. Every frame is a deterministic function of song time, so the live preview in the browser and the offline 1080p60 (or 4K60) export are identical.
 
-**Watch it on YouTube:** https://youtu.be/FVS0YieZ4k0 (the 4:53 house version).
+**Watch it on YouTube:** https://youtu.be/FVS0YieZ4k0 (the 4:53 Suno house remix).
 
 The first cut, for the earlier 2:37 version of the song, is at https://www.youtube.com/watch?v=5EoO5413dBY. YouTube's compression smears the film grain; for the best version, render it locally (see [Render the video](#render-the-video)): the code picks up to 324 sub-frames per frame for motion blur where the motion needs them.
 
@@ -14,7 +14,7 @@ The concept, style bible and plate-by-plate treatment are in [`docs/TREATMENT.md
 
 ## Layout
 
-- `audio/pdoom.mp3` — the song (the 4:53 house version, see Credits).
+- `audio/pdoom.mp3` — the song: a 4:53 Suno house remix (see Credits).
 - `lyrics.txt` — its lyrics as written; the bridge, the "Just transformers" verse and the final chorus are sung twice.
 - `lyrics/lyrics.src.js` — the sung lines in order (89, repeats included) with line-level timings; the input of the alignment.
 - `analysis/` — Python (uv) tools that produced the timing data: Demucs stem separation, CTC forced alignment cross-checked with Whisper, beat/downbeat/onset analysis. See `analysis/align.py` and `analysis/analyze.py`.
@@ -92,7 +92,7 @@ The models download about 4 GB of weights into `analysis/.cache/`; delete that f
 
 ## Credits
 
-- **Song:** "I'm Upping My P(doom)". The lyrics are by [osmarks](https://docs.osmarks.net/hypha/p%28doom%29_song_objectively_correct_interpretation), built on an opening verse and chorus by [MusicPerson](https://www.udio.com/creators/MusicPerson), with lines suggested on the EleutherAI Discord and help from Claude on the outro and final chorus. The original was generated with Udio and released in November 2024 ([YouTube](https://www.youtube.com/watch?v=uEB5E67vcPA)). The first cut of this video used the "Claude-Pop" version made with Suno, posted by [deckard (@slimer48484)](https://x.com/slimer48484/status/2097752569212756134) in September 2026. The current edit uses "Upping my p(Doom)", a 4:53 house rework with extended lyrics made with Suno by RadiatingTechHouse662 ([Suno](https://suno.com/song/b73b8f86-fe82-4813-8aa7-b90ab884ff97)), October 2026.
+- **Song:** "I'm Upping My P(doom)". The lyrics are by [osmarks](https://docs.osmarks.net/hypha/p%28doom%29_song_objectively_correct_interpretation), built on an opening verse and chorus by [MusicPerson](https://www.udio.com/creators/MusicPerson), with lines suggested on the EleutherAI Discord and help from Claude on the outro and final chorus. The original was generated with Udio and released in November 2024 ([YouTube](https://www.youtube.com/watch?v=uEB5E67vcPA)). The first cut of this video used the "Claude-Pop" version made with Suno, posted by [deckard (@slimer48484)](https://x.com/slimer48484/status/2097752569212756134) in September 2026. The current edit uses "Upping my p(Doom)", a Suno remix: a 4:53 house rework with extended lyrics, made with Suno by RadiatingTechHouse662 ([Suno](https://suno.com/song/b73b8f86-fe82-4813-8aa7-b90ab884ff97)), October 2026.
 - **Fonts:** Archivo, IBM Plex Mono and Cormorant Garamond (SIL Open Font License). Single-stroke EMS and Hershey fonts via the `hersheytext` package (OFL / public domain).
 
 ## License
