@@ -2,9 +2,9 @@
 
 A generative, code-rendered music video with word-synced karaoke typography. Every frame is a deterministic function of song time, so the live preview in the browser and the offline 1080p60 (or 4K60) export are identical.
 
-**Watch it in 4K on YouTube:** https://www.youtube.com/watch?v=5EoO5413dBY
+**Watch it on YouTube:** https://youtu.be/FVS0YieZ4k0 (the 4:53 house version).
 
-The YouTube upload is an earlier render of the earlier, 2:37 version of the song (the edit has since been re-cut for the 4:53 house version, see Credits). It also averages only 4 sub-frames per frame for motion blur, so fast motion shows stepped copies, and YouTube's compression smears the film grain. For the best version, render it locally (see [Render the video](#render-the-video)): the current code picks up to 324 sub-frames per frame where the motion needs them.
+The first cut, for the earlier 2:37 version of the song, is at https://www.youtube.com/watch?v=5EoO5413dBY. YouTube's compression smears the film grain; for the best version, render it locally (see [Render the video](#render-the-video)): the code picks up to 324 sub-frames per frame for motion blur where the motion needs them.
 
 The video was made with Claude (Opus 5.5) in Claude Code: the concept and treatment, the lyric alignment and audio analysis, the renderer, every scene and the renders were all worked out in conversation with Claude.
 
